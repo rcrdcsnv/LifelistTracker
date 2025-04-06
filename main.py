@@ -333,35 +333,51 @@ class Database:
         )
         return self.cursor.fetchall()
 
+    def species_has_primary_photo(self, lifelist_id, species_name):
+        """Check if a species already has a primary photo set"""
+        query = """
+        SELECT COUNT(*) FROM photos p
+        JOIN observations o ON p.observation_id = o.id
+        WHERE o.lifelist_id = ? AND o.species_name = ? AND p.is_primary = 1
+        """
+        self.cursor.execute(query, (lifelist_id, species_name))
+        count = self.cursor.fetchone()[0]
+        return count > 0
+
+    def get_species_primary_photo(self, lifelist_id, species_name):
+        """Get the primary photo for a species"""
+        query = """
+        SELECT p.id, p.file_path, p.is_primary, p.latitude, p.longitude, p.taken_date, o.id as observation_id
+        FROM photos p
+        JOIN observations o ON p.observation_id = o.id
+        WHERE o.lifelist_id = ? AND o.species_name = ? AND p.is_primary = 1
+        ORDER BY p.id DESC
+        LIMIT 1
+        """
+        self.cursor.execute(query, (lifelist_id, species_name))
+        return self.cursor.fetchone()
+
     def set_primary_photo(self, photo_id, observation_id):
         try:
-            # First get the species name and lifelist_id for this observation
-            self.cursor.execute(
-                "SELECT species_name, lifelist_id FROM observations WHERE id = ?",
-                (observation_id,)
-            )
+            # Get the species name and lifelist_id for this observation
+            self.cursor.execute("SELECT species_name, lifelist_id FROM observations WHERE id = ?", (observation_id,))
             result = self.cursor.fetchone()
             if not result:
                 return False
 
             species_name, lifelist_id = result
 
-            # Get all observations for this species in the lifelist
-            observation_ids = self.get_observations_by_species(lifelist_id, species_name)
+            # Get all observations for this species
+            self.cursor.execute("SELECT id FROM observations WHERE lifelist_id = ? AND species_name = ?",
+                                (lifelist_id, species_name))
+            all_obs_ids = [row[0] for row in self.cursor.fetchall()]
 
-            # Reset primary status for ALL photos of ALL observations of this species
-            for obs_id in observation_ids:
-                self.cursor.execute(
-                    "UPDATE photos SET is_primary = 0 WHERE observation_id = ?",
-                    (obs_id,)
-                )
+            # Reset primary flag for all photos of this species
+            for obs_id in all_obs_ids:
+                self.cursor.execute("UPDATE photos SET is_primary = 0 WHERE observation_id = ?", (obs_id,))
 
             # Set the selected photo as primary
-            self.cursor.execute(
-                "UPDATE photos SET is_primary = 1 WHERE id = ?",
-                (photo_id,)
-            )
-
+            self.cursor.execute("UPDATE photos SET is_primary = 1 WHERE id = ?", (photo_id,))
             self.conn.commit()
             return True
         except sqlite3.Error as e:
@@ -1215,20 +1231,26 @@ class LifelistApp:
                 photos = self.db.get_photos(obs_id)
                 all_photos.extend(photos)
 
-                # Find the primary photo for this species
-                primary_photo = self.db.get_primary_photo_for_species(self.current_lifelist_id, species_name)
+                # Try to get the primary photo for this species
                 photo_thumbnail = None
+                species_primary = self.db.get_species_primary_photo(self.current_lifelist_id, species_name)
 
-                if primary_photo:
-                    thumbnail = PhotoUtils.resize_image_for_thumbnail(primary_photo[1])
+                if species_primary:
+                    thumbnail = PhotoUtils.resize_image_for_thumbnail(species_primary[1])
                     if thumbnail:
                         photo_thumbnail = thumbnail
+                else:
+                    # If no primary photo, collect all photos from all observations of this species
+                    all_photos = []
+                    for obs_id in data["observation_ids"]:
+                        photos = self.db.get_photos(obs_id)
+                        all_photos.extend(photos)
 
-                # If no primary photo found but all_photos exist, use the first one (fallback)
-                if not photo_thumbnail and all_photos:
-                    thumbnail = PhotoUtils.resize_image_for_thumbnail(all_photos[0][1])
-                    if thumbnail:
-                        photo_thumbnail = thumbnail
+                    # Use the first photo if any exist
+                    if all_photos:
+                        thumbnail = PhotoUtils.resize_image_for_thumbnail(all_photos[0][1])
+                        if thumbnail:
+                            photo_thumbnail = thumbnail
 
             # Species name (with thumbnail if available)
             species_frame = ctk.CTkFrame(item)
@@ -1717,6 +1739,16 @@ class LifelistApp:
             )
 
             if file_paths:
+                # Check if this species already has a primary photo
+                species_name = species_entry.get().strip()
+                has_primary = False
+
+                if species_name and self.current_lifelist_id:
+                    has_primary = self.db.species_has_primary_photo(self.current_lifelist_id, species_name)
+
+                # Also check if any photos in the current list are marked as primary
+                current_has_primary = any(p.get("is_primary", False) for p in photos)
+
                 for path in file_paths:
                     # Ensure the path is not already in the list
                     if not any(p["path"] == path for p in photos):
@@ -1726,10 +1758,11 @@ class LifelistApp:
                         # Create thumbnail
                         thumbnail = PhotoUtils.resize_image_for_thumbnail(path)
 
-                        # Add to photos list
+                        # Add to photos list - only set as primary if there's no existing primary
+                        # for this species and no primary in the current list
                         photos.append({
                             "path": path,
-                            "is_primary": len(photos) == 0,  # First photo is primary by default
+                            "is_primary": not (has_primary or current_has_primary) and len(photos) == 0,
                             "thumbnail": thumbnail,
                             "latitude": lat,
                             "longitude": lon,
