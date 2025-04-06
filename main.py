@@ -194,6 +194,39 @@ class Database:
         self.cursor.execute(query, params)
         return self.cursor.fetchall()
 
+    def get_observations_by_species(self, lifelist_id, species_name):
+        """Get all observations of a specific species in a lifelist"""
+        self.cursor.execute(
+            "SELECT id FROM observations WHERE lifelist_id = ? AND species_name = ?",
+            (lifelist_id, species_name)
+        )
+        return [row[0] for row in self.cursor.fetchall()]
+
+    def get_primary_photo_for_species(self, lifelist_id, species_name):
+        """Get the primary photo for a species across all observations"""
+        query = """
+        SELECT p.id, p.file_path, p.is_primary, p.latitude, p.longitude, p.taken_date
+        FROM photos p
+        JOIN observations o ON p.observation_id = o.id
+        WHERE o.lifelist_id = ? AND o.species_name = ? AND p.is_primary = 1
+        """
+        self.cursor.execute(query, (lifelist_id, species_name))
+        result = self.cursor.fetchone()
+
+        if result:
+            return result
+
+        # If no primary photo is set, find any photo for this species
+        query = """
+        SELECT p.id, p.file_path, p.is_primary, p.latitude, p.longitude, p.taken_date
+        FROM photos p
+        JOIN observations o ON p.observation_id = o.id
+        WHERE o.lifelist_id = ? AND o.species_name = ?
+        LIMIT 1
+        """
+        self.cursor.execute(query, (lifelist_id, species_name))
+        return self.cursor.fetchone()
+
     def get_observation_details(self, observation_id):
         self.cursor.execute(
             """SELECT id, lifelist_id, species_name, observation_date, location, 
@@ -257,13 +290,30 @@ class Database:
 
     def add_photo(self, observation_id, file_path, is_primary=0, latitude=None, longitude=None, taken_date=None):
         try:
-            # If this is marked as primary, reset all others
-            if is_primary:
-                self.cursor.execute(
-                    "UPDATE photos SET is_primary = 0 WHERE observation_id = ?",
-                    (observation_id,)
-                )
+            # Get the species and lifelist for this observation
+            self.cursor.execute(
+                "SELECT species_name, lifelist_id FROM observations WHERE id = ?",
+                (observation_id,)
+            )
+            species_name, lifelist_id = self.cursor.fetchone()
 
+            # If this is being set as primary, reset all other photos for this species
+            if is_primary:
+                # Get all observations for this species
+                self.cursor.execute(
+                    "SELECT id FROM observations WHERE lifelist_id = ? AND species_name = ?",
+                    (lifelist_id, species_name)
+                )
+                species_obs_ids = [row[0] for row in self.cursor.fetchall()]
+
+                # Reset all primary photos for this species
+                for obs_id in species_obs_ids:
+                    self.cursor.execute(
+                        "UPDATE photos SET is_primary = 0 WHERE observation_id = ?",
+                        (obs_id,)
+                    )
+
+            # Insert the new photo
             self.cursor.execute(
                 """INSERT INTO photos 
                 (observation_id, file_path, is_primary, latitude, longitude, taken_date) 
@@ -272,7 +322,8 @@ class Database:
             )
             self.conn.commit()
             return self.cursor.lastrowid
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            print(f"Error adding photo: {e}")
             return None
 
     def get_photos(self, observation_id):
@@ -284,17 +335,37 @@ class Database:
 
     def set_primary_photo(self, photo_id, observation_id):
         try:
+            # First get the species name and lifelist_id for this observation
             self.cursor.execute(
-                "UPDATE photos SET is_primary = 0 WHERE observation_id = ?",
+                "SELECT species_name, lifelist_id FROM observations WHERE id = ?",
                 (observation_id,)
             )
+            result = self.cursor.fetchone()
+            if not result:
+                return False
+
+            species_name, lifelist_id = result
+
+            # Get all observations for this species in the lifelist
+            observation_ids = self.get_observations_by_species(lifelist_id, species_name)
+
+            # Reset primary status for ALL photos of ALL observations of this species
+            for obs_id in observation_ids:
+                self.cursor.execute(
+                    "UPDATE photos SET is_primary = 0 WHERE observation_id = ?",
+                    (obs_id,)
+                )
+
+            # Set the selected photo as primary
             self.cursor.execute(
                 "UPDATE photos SET is_primary = 1 WHERE id = ?",
                 (photo_id,)
             )
+
             self.conn.commit()
             return True
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            print(f"Error setting primary photo: {e}")
             return False
 
     def delete_photo(self, photo_id):
@@ -1144,19 +1215,20 @@ class LifelistApp:
                 photos = self.db.get_photos(obs_id)
                 all_photos.extend(photos)
 
-            # Find primary photo among all photos
-            for photo in all_photos:
-                if photo[2]:  # is_primary
-                    thumbnail = PhotoUtils.resize_image_for_thumbnail(photo[1])
+                # Find the primary photo for this species
+                primary_photo = self.db.get_primary_photo_for_species(self.current_lifelist_id, species_name)
+                photo_thumbnail = None
+
+                if primary_photo:
+                    thumbnail = PhotoUtils.resize_image_for_thumbnail(primary_photo[1])
                     if thumbnail:
                         photo_thumbnail = thumbnail
-                        break
 
-            # If no primary photo found but photos exist, use the first one
-            if not photo_thumbnail and all_photos:
-                thumbnail = PhotoUtils.resize_image_for_thumbnail(all_photos[0][1])
-                if thumbnail:
-                    photo_thumbnail = thumbnail
+                # If no primary photo found but all_photos exist, use the first one (fallback)
+                if not photo_thumbnail and all_photos:
+                    thumbnail = PhotoUtils.resize_image_for_thumbnail(all_photos[0][1])
+                    if thumbnail:
+                        photo_thumbnail = thumbnail
 
             # Species name (with thumbnail if available)
             species_frame = ctk.CTkFrame(item)
@@ -1671,6 +1743,12 @@ class LifelistApp:
                 photos[i]["is_primary"] = (i == index)
             update_photos_display()
 
+            # Show info about species-level changes
+            messagebox.showinfo(
+                "Primary Photo Set",
+                "This photo will be set as the primary photo for all observations of this species when saved."
+            )
+
         def remove_photo(index):
             photos.pop(index)
             # If we removed the primary photo, set a new one
@@ -1872,8 +1950,12 @@ class LifelistApp:
                     self.db.add_tag_to_observation(obs_id, tag_id)
 
                 # Save photos
+                species_primary_set = False
                 for photo in photos:
-                    # Check if this is a new photo or an existing one
+                    if photo.get("is_primary", False):
+                        species_primary_set = True
+
+                    # New or existing photo handling
                     if "id" not in photo:
                         # New photo
                         self.db.add_photo(
@@ -1884,6 +1966,17 @@ class LifelistApp:
                             photo.get("longitude"),
                             photo.get("taken_date")
                         )
+                    else:
+                        # Update existing photo's primary status if needed
+                        if photo["is_primary"]:
+                            self.db.set_primary_photo(photo["id"], obs_id)
+
+                # Provide feedback only once if any photo was set as primary
+                if species_primary_set:
+                    messagebox.showinfo(
+                        "Primary Photo Updated",
+                        "The selected primary photo will now appear for all observations of this species."
+                    )
 
                 self.db.conn.commit()
 
