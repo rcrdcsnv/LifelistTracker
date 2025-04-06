@@ -1,1729 +1,2157 @@
+import os
 import json
-import tkinter as tk
-import customtkinter as ctk
-from tkinter import filedialog, messagebox
-from PIL import Image, ImageTk
 import sqlite3
-from datetime import datetime
-import uuid
-import shutil
-from PIL.ExifTags import TAGS, GPSTAGS
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import customtkinter as ctk
+from PIL import Image, ImageTk
 import folium
+from folium.plugins import MarkerCluster
 import webbrowser
+import exifread
+from datetime import datetime
+import shutil
 import re
 
-# Configure CustomTkinter appearance
-ctk.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
-ctk.set_default_color_theme("blue")  # Themes: "blue" (standard), "green", "dark-blue"
+# Set appearance mode and default theme
+ctk.set_appearance_mode("System")
+ctk.set_default_color_theme("blue")
 
 
-class LifelistManager:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Lifelist Manager")
-        self.root.geometry("1200x800")
+class Database:
+    def __init__(self, db_path="lifelists.db"):
+        self.db_path = db_path
+        self.conn = sqlite3.connect(db_path)
+        self.cursor = self.conn.cursor()
+        self.create_tables()
 
-        # Initialize database
-        self.db_path = os.path.join(os.path.expanduser("~"), "lifelist_data")
-        os.makedirs(self.db_path, exist_ok=True)
-        self.db_file = os.path.join(self.db_path, "lifelist.db")
-        self.photo_dir = os.path.join(self.db_path, "photos")
-        os.makedirs(self.photo_dir, exist_ok=True)
-
-        self.create_database()
-
-        # Variables
-        self.current_lifelist = None
-        self.current_observation = None
-        self.filter_var = ctk.StringVar(value="All")
-        self.search_var = ctk.StringVar()
-        self.search_var.trace("w", self.on_search_change)
-        self.tag_filter = set()
-
-        # Create UI
-        self.create_menu()
-        self.create_main_frame()
-
-        # Load lifelists
-        self.load_lifelists()
-
-    def create_main_frame(self):
-        """Create the main application frame and widgets"""
-        # Main frame with three panels
-        main_frame = ctk.CTkFrame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # Left panel - Lifelist selection
-        left_frame = ctk.CTkFrame(main_frame)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=5, pady=5)
-
-        ctk.CTkLabel(left_frame, text="Your Lifelists", font=ctk.CTkFont(size=14, weight="bold")).pack(padx=10,
-                                                                                                       pady=(10, 5))
-
-        # Custom treeview for lifelists (CustomTkinter doesn't have a direct ttk.Treeview equivalent)
-        # We'll use a listbox with a custom selection handler
-        self.lifelist_listbox = ctk.CTkListbox(left_frame, width=200, height=600,
-                                               command=self.on_lifelist_select_from_listbox)
-        self.lifelist_listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # Center panel - Observations list
-        center_frame = ctk.CTkFrame(main_frame)
-        center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        # Filter and search controls
-        filter_frame = ctk.CTkFrame(center_frame)
-        filter_frame.pack(fill=tk.X, padx=10, pady=10)
-
-        ctk.CTkLabel(filter_frame, text="Tier:").pack(side=tk.LEFT, padx=5)
-        tier_combo = ctk.CTkOptionMenu(filter_frame, variable=self.filter_var, values=["All", "Wild", "Captive"],
-                                       command=self.filter_observations)
-        tier_combo.pack(side=tk.LEFT, padx=5)
-
-        ctk.CTkLabel(filter_frame, text="Search:").pack(side=tk.LEFT, padx=5)
-        search_entry = ctk.CTkEntry(filter_frame, textvariable=self.search_var, width=200)
-        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-
-        # Tags filter frame
-        self.tags_filter_frame = ctk.CTkFrame(center_frame)
-        self.tags_filter_frame.pack(fill=tk.X, padx=10, pady=5)
-
-        ctk.CTkLabel(self.tags_filter_frame, text="Filter by Tags",
-                     font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w", padx=5, pady=5)
-
-        # Observations frame
-        observations_frame = ctk.CTkFrame(center_frame)
-        observations_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        ctk.CTkLabel(observations_frame, text="Observations",
-                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=10, pady=5)
-
-        # Create a frame for the header
-        header_frame = ctk.CTkFrame(observations_frame)
-        header_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
-
-        # Create header labels
-        ctk.CTkLabel(header_frame, text="Species", width=150,
-                     font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=(0, 5))
-        ctk.CTkLabel(header_frame, text="Tier", width=70,
-                     font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
-        ctk.CTkLabel(header_frame, text="Date", width=100,
-                     font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
-        ctk.CTkLabel(header_frame, text="Location", width=150,
-                     font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
-
-        # Create a custom listbox for observations
-        observations_container = ctk.CTkScrollableFrame(observations_frame)
-        observations_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-
-        self.observations_frame = observations_container
-
-        # Observation context menu
-        self.obs_context_menu = tk.Menu(self.root, tearoff=0)
-        self.obs_context_menu.add_command(label="Edit", command=self.edit_observation)
-        self.obs_context_menu.add_command(label="Delete", command=self.delete_observation)
-
-        # Right panel - Observation details
-        right_frame = ctk.CTkFrame(main_frame)
-        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        ctk.CTkLabel(right_frame, text="Observation Details",
-                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=10, pady=5)
-
-        self.details_frame = ctk.CTkScrollableFrame(right_frame)
-        self.details_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # Default "no selection" message
-        self.no_selection_label = ctk.CTkLabel(self.details_frame, text="Select an observation to view details")
-        self.no_selection_label.pack(fill=tk.BOTH, expand=True)
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-
-        # Lifelists table
-        cursor.execute('''
+    def create_tables(self):
+        # Create tables for lifelists, observations, photos, tags, and custom fields
+        self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS lifelists (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            description TEXT,
-            taxonomy_source TEXT,
-            created_date TEXT,
-            modified_date TEXT,
-            custom_fields TEXT
+            id INTEGER PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            taxonomy TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         ''')
 
-        # Observations table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS observations (
-            id TEXT PRIMARY KEY,
-            lifelist_id TEXT NOT NULL,
-            species TEXT NOT NULL,
-            tier TEXT NOT NULL,
-            observation_date TEXT,
-            location TEXT,
-            notes TEXT,
-            latitude REAL,
-            longitude REAL,
-            custom_data TEXT,
-            created_date TEXT,
-            modified_date TEXT,
-            thumbnail_photo TEXT,
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS custom_fields (
+            id INTEGER PRIMARY KEY,
+            lifelist_id INTEGER,
+            field_name TEXT,
+            field_type TEXT,
             FOREIGN KEY (lifelist_id) REFERENCES lifelists (id) ON DELETE CASCADE
         )
         ''')
 
-        # Photos table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS photos (
-            id TEXT PRIMARY KEY,
-            observation_id TEXT NOT NULL,
-            filename TEXT NOT NULL,
-            description TEXT,
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS observations (
+            id INTEGER PRIMARY KEY,
+            lifelist_id INTEGER,
+            species_name TEXT,
+            observation_date TIMESTAMP,
+            location TEXT,
             latitude REAL,
             longitude REAL,
-            is_thumbnail INTEGER DEFAULT 0,
-            upload_date TEXT,
+            tier TEXT,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (lifelist_id) REFERENCES lifelists (id) ON DELETE CASCADE
+        )
+        ''')
+
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS observation_custom_fields (
+            id INTEGER PRIMARY KEY,
+            observation_id INTEGER,
+            field_id INTEGER,
+            value TEXT,
+            FOREIGN KEY (observation_id) REFERENCES observations (id) ON DELETE CASCADE,
+            FOREIGN KEY (field_id) REFERENCES custom_fields (id) ON DELETE CASCADE
+        )
+        ''')
+
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS photos (
+            id INTEGER PRIMARY KEY,
+            observation_id INTEGER,
+            file_path TEXT,
+            is_primary INTEGER DEFAULT 0,
+            latitude REAL,
+            longitude REAL,
+            taken_date TIMESTAMP,
             FOREIGN KEY (observation_id) REFERENCES observations (id) ON DELETE CASCADE
         )
         ''')
 
-        # Tags table
-        cursor.execute('''
+        self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS tags (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE
+            id INTEGER PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL
         )
         ''')
 
-        # Observation-Tags relationship table
-        cursor.execute('''
+        self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS observation_tags (
-            observation_id TEXT,
-            tag_id TEXT,
+            observation_id INTEGER,
+            tag_id INTEGER,
             PRIMARY KEY (observation_id, tag_id),
             FOREIGN KEY (observation_id) REFERENCES observations (id) ON DELETE CASCADE,
             FOREIGN KEY (tag_id) REFERENCES tags (id) ON DELETE CASCADE
         )
         ''')
 
-        conn.commit()
-        conn.close()
+        self.conn.commit()
 
-    def create_menu(self):
-        """Create application menu"""
-        menu_bar = tk.Menu(self.root)
+    def create_lifelist(self, name, taxonomy=None):
+        try:
+            self.cursor.execute(
+                "INSERT INTO lifelists (name, taxonomy) VALUES (?, ?)",
+                (name, taxonomy)
+            )
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.IntegrityError:
+            return None  # Lifelist with this name already exists
 
-        # File menu
-        file_menu = tk.Menu(menu_bar, tearoff=0)
-        file_menu.add_command(label="New Lifelist", command=self.new_lifelist)
-        file_menu.add_command(label="Export Lifelist", command=self.export_lifelist)
-        file_menu.add_command(label="Import Lifelist", command=self.import_lifelist)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.root.quit)
-        menu_bar.add_cascade(label="File", menu=file_menu)
+    def get_lifelists(self):
+        self.cursor.execute("SELECT id, name, taxonomy FROM lifelists ORDER BY name")
+        return self.cursor.fetchall()
 
-        # Lifelist menu
-        lifelist_menu = tk.Menu(menu_bar, tearoff=0)
-        lifelist_menu.add_command(label="Add Observation", command=self.add_observation)
-        lifelist_menu.add_command(label="View Map", command=self.view_map)
-        lifelist_menu.add_command(label="Manage Custom Fields", command=self.manage_custom_fields)
-        lifelist_menu.add_command(label="Delete Lifelist", command=self.delete_lifelist)
-        menu_bar.add_cascade(label="Lifelist", menu=lifelist_menu)
+    def delete_lifelist(self, lifelist_id):
+        # First, get the lifelist data for potential export
+        self.cursor.execute("SELECT name FROM lifelists WHERE id = ?", (lifelist_id,))
+        lifelist = self.cursor.fetchone()
 
-        self.root.config(menu=menu_bar)
+        if lifelist:
+            self.cursor.execute("DELETE FROM lifelists WHERE id = ?", (lifelist_id,))
+            self.conn.commit()
+            return True
+        return False
 
-    def create_main_frame(self):
-        """Create the main application frame and widgets"""
-        # Main frame with three panels
-        main_frame = ttk.Frame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    def add_custom_field(self, lifelist_id, field_name, field_type):
+        try:
+            self.cursor.execute(
+                "INSERT INTO custom_fields (lifelist_id, field_name, field_type) VALUES (?, ?, ?)",
+                (lifelist_id, field_name, field_type)
+            )
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.IntegrityError:
+            return None
 
-        # Left panel - Lifelist selection
-        left_frame = ttk.LabelFrame(main_frame, text="Your Lifelists")
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=5, pady=5)
-
-        self.lifelist_treeview = ttk.Treeview(left_frame, columns=("name"), show="headings")
-        self.lifelist_treeview.heading("name", text="Name")
-        self.lifelist_treeview.column("name", width=150)
-        self.lifelist_treeview.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.lifelist_treeview.bind("<<TreeviewSelect>>", self.on_lifelist_select)
-
-        # Center panel - Observations list
-        center_frame = ttk.Frame(main_frame)
-        center_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        # Filter and search controls
-        filter_frame = ttk.Frame(center_frame)
-        filter_frame.pack(fill=tk.X, padx=5, pady=5)
-
-        ttk.Label(filter_frame, text="Tier:").pack(side=tk.LEFT, padx=5)
-        tier_combo = ttk.Combobox(filter_frame, textvariable=self.filter_var, values=["All", "Wild", "Captive"])
-        tier_combo.pack(side=tk.LEFT, padx=5)
-        tier_combo.bind("<<ComboboxSelected>>", self.filter_observations)
-
-        ttk.Label(filter_frame, text="Search:").pack(side=tk.LEFT, padx=5)
-        search_entry = ttk.Entry(filter_frame, textvariable=self.search_var)
-        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-
-        # Tags filter frame
-        self.tags_filter_frame = ttk.LabelFrame(center_frame, text="Filter by Tags")
-        self.tags_filter_frame.pack(fill=tk.X, padx=5, pady=5)
-
-        # Observations treeview
-        observations_frame = ttk.LabelFrame(center_frame, text="Observations")
-        observations_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        self.observations_treeview = ttk.Treeview(
-            observations_frame,
-            columns=("species", "tier", "date", "location"),
-            show="headings"
+    def get_custom_fields(self, lifelist_id):
+        self.cursor.execute(
+            "SELECT id, field_name, field_type FROM custom_fields WHERE lifelist_id = ?",
+            (lifelist_id,)
         )
-        self.observations_treeview.heading("species", text="Species")
-        self.observations_treeview.heading("tier", text="Tier")
-        self.observations_treeview.heading("date", text="Date")
-        self.observations_treeview.heading("location", text="Location")
+        return self.cursor.fetchall()
 
-        self.observations_treeview.column("species", width=150)
-        self.observations_treeview.column("tier", width=70)
-        self.observations_treeview.column("date", width=100)
-        self.observations_treeview.column("location", width=150)
+    def add_observation(self, lifelist_id, species_name, observation_date=None,
+                        location=None, latitude=None, longitude=None, tier="wild", notes=None):
+        try:
+            self.cursor.execute(
+                """INSERT INTO observations 
+                (lifelist_id, species_name, observation_date, location, latitude, longitude, tier, notes) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (lifelist_id, species_name, observation_date, location, latitude, longitude, tier, notes)
+            )
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.Error as e:
+            print(f"Database error: {e}")
+            return None
 
-        scrollbar = ttk.Scrollbar(observations_frame, orient=tk.VERTICAL, command=self.observations_treeview.yview)
-        self.observations_treeview.configure(yscroll=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.observations_treeview.pack(fill=tk.BOTH, expand=True)
-        self.observations_treeview.bind("<<TreeviewSelect>>", self.on_observation_select)
+    def get_observations(self, lifelist_id, tier=None, tag_ids=None, search_term=None):
+        query = "SELECT id, species_name, observation_date, location, tier FROM observations WHERE lifelist_id = ?"
+        params = [lifelist_id]
 
-        # Observation context menu
-        self.obs_context_menu = tk.Menu(self.observations_treeview, tearoff=0)
-        self.obs_context_menu.add_command(label="Edit", command=self.edit_observation)
-        self.obs_context_menu.add_command(label="Delete", command=self.delete_observation)
-        self.observations_treeview.bind("<Button-3>", self.show_obs_context_menu)
+        if tier:
+            query += " AND tier = ?"
+            params.append(tier)
 
-        # Right panel - Observation details
-        right_frame = ttk.LabelFrame(main_frame, text="Observation Details")
-        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        if search_term:
+            query += " AND (species_name LIKE ? OR notes LIKE ? OR location LIKE ?)"
+            search_param = f"%{search_term}%"
+            params.extend([search_param, search_param, search_param])
 
-        self.details_frame = ttk.Frame(right_frame)
-        self.details_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        if tag_ids and len(tag_ids) > 0:
+            placeholders = ','.join(['?' for _ in tag_ids])
+            query = f"""
+            SELECT o.id, o.species_name, o.observation_date, o.location, o.tier
+            FROM observations o
+            JOIN observation_tags ot ON o.id = ot.observation_id
+            WHERE o.lifelist_id = ? AND ot.tag_id IN ({placeholders})
+            GROUP BY o.id
+            HAVING COUNT(DISTINCT ot.tag_id) = ?
+            """
+            params = [lifelist_id] + tag_ids + [len(tag_ids)]
 
-        # Default "no selection" message
-        self.no_selection_label = ttk.Label(self.details_frame, text="Select an observation to view details")
-        self.no_selection_label.pack(fill=tk.BOTH, expand=True)
+        query += " ORDER BY observation_date DESC"
 
-    def load_lifelists(self):
-        """Load all lifelists from the database"""
-        self.lifelist_treeview.delete(*self.lifelist_treeview.get_children())
+        self.cursor.execute(query, params)
+        return self.cursor.fetchall()
 
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, name FROM lifelists ORDER BY name")
-        lifelists = cursor.fetchall()
-        conn.close()
+    def get_observation_details(self, observation_id):
+        self.cursor.execute(
+            """SELECT id, lifelist_id, species_name, observation_date, location, 
+            latitude, longitude, tier, notes FROM observations WHERE id = ?""",
+            (observation_id,)
+        )
+        observation = self.cursor.fetchone()
 
-        for lifelist in lifelists:
-            self.lifelist_treeview.insert("", "end", values=(lifelist[1],), iid=lifelist[0])
+        if observation:
+            # Get custom field values
+            self.cursor.execute(
+                """SELECT cf.field_name, cf.field_type, ocf.value
+                FROM observation_custom_fields ocf
+                JOIN custom_fields cf ON ocf.field_id = cf.id
+                WHERE ocf.observation_id = ?""",
+                (observation_id,)
+            )
+            custom_fields = self.cursor.fetchall()
 
-    def new_lifelist(self):
-        """Create a new lifelist"""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("New Lifelist")
+            # Get tags
+            self.cursor.execute(
+                """SELECT t.id, t.name
+                FROM tags t
+                JOIN observation_tags ot ON t.id = ot.tag_id
+                WHERE ot.observation_id = ?""",
+                (observation_id,)
+            )
+            tags = self.cursor.fetchall()
+
+            return observation, custom_fields, tags
+        return None, None, None
+
+    def update_observation(self, observation_id, species_name, observation_date=None,
+                           location=None, latitude=None, longitude=None, tier="wild", notes=None):
+        try:
+            self.cursor.execute(
+                """UPDATE observations SET
+                species_name = ?, observation_date = ?, location = ?, 
+                latitude = ?, longitude = ?, tier = ?, notes = ?
+                WHERE id = ?""",
+                (species_name, observation_date, location, latitude, longitude, tier, notes, observation_id)
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def delete_observation(self, observation_id):
+        try:
+            # First, get all photos to delete the files
+            self.cursor.execute("SELECT file_path FROM photos WHERE observation_id = ?", (observation_id,))
+            photos = self.cursor.fetchall()
+
+            # Delete the observation (cascades to other tables)
+            self.cursor.execute("DELETE FROM observations WHERE id = ?", (observation_id,))
+            self.conn.commit()
+
+            return True, photos
+        except sqlite3.Error:
+            return False, None
+
+    def add_photo(self, observation_id, file_path, is_primary=0, latitude=None, longitude=None, taken_date=None):
+        try:
+            # If this is marked as primary, reset all others
+            if is_primary:
+                self.cursor.execute(
+                    "UPDATE photos SET is_primary = 0 WHERE observation_id = ?",
+                    (observation_id,)
+                )
+
+            self.cursor.execute(
+                """INSERT INTO photos 
+                (observation_id, file_path, is_primary, latitude, longitude, taken_date) 
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (observation_id, file_path, is_primary, latitude, longitude, taken_date)
+            )
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.Error:
+            return None
+
+    def get_photos(self, observation_id):
+        self.cursor.execute(
+            "SELECT id, file_path, is_primary, latitude, longitude, taken_date FROM photos WHERE observation_id = ?",
+            (observation_id,)
+        )
+        return self.cursor.fetchall()
+
+    def set_primary_photo(self, photo_id, observation_id):
+        try:
+            self.cursor.execute(
+                "UPDATE photos SET is_primary = 0 WHERE observation_id = ?",
+                (observation_id,)
+            )
+            self.cursor.execute(
+                "UPDATE photos SET is_primary = 1 WHERE id = ?",
+                (photo_id,)
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def delete_photo(self, photo_id):
+        try:
+            # First, get the photo details
+            self.cursor.execute("SELECT file_path, is_primary, observation_id FROM photos WHERE id = ?", (photo_id,))
+            photo = self.cursor.fetchone()
+
+            if not photo:
+                return False, None
+
+            # Delete the photo
+            self.cursor.execute("DELETE FROM photos WHERE id = ?", (photo_id,))
+
+            # If this was the primary photo, set another as primary
+            if photo[1]:  # is_primary
+                self.cursor.execute(
+                    "UPDATE photos SET is_primary = 1 WHERE observation_id = ? AND id = (SELECT MIN(id) FROM photos WHERE observation_id = ?)",
+                    (photo[2], photo[2])
+                )
+
+            self.conn.commit()
+            return True, photo[0]  # Return the file path
+        except sqlite3.Error as e:
+            print(f"Error deleting photo: {e}")
+            return False, None
+
+    def get_all_tiers(self, lifelist_id):
+        self.cursor.execute(
+            "SELECT DISTINCT tier FROM observations WHERE lifelist_id = ?",
+            (lifelist_id,)
+        )
+        return [row[0] for row in self.cursor.fetchall()]
+
+    def add_tag(self, tag_name):
+        try:
+            self.cursor.execute("INSERT INTO tags (name) VALUES (?)", (tag_name,))
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.IntegrityError:
+            # Tag already exists, get its ID
+            self.cursor.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
+            return self.cursor.fetchone()[0]
+
+    def get_all_tags(self):
+        self.cursor.execute("SELECT id, name FROM tags ORDER BY name")
+        return self.cursor.fetchall()
+
+    def add_tag_to_observation(self, observation_id, tag_id):
+        try:
+            self.cursor.execute(
+                "INSERT INTO observation_tags (observation_id, tag_id) VALUES (?, ?)",
+                (observation_id, tag_id)
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False  # Tag already associated with this observation
+
+    def remove_tag_from_observation(self, observation_id, tag_id):
+        self.cursor.execute(
+            "DELETE FROM observation_tags WHERE observation_id = ? AND tag_id = ?",
+            (observation_id, tag_id)
+        )
+        self.conn.commit()
+        return self.cursor.rowcount > 0
+
+    def get_observation_tags(self, observation_id):
+        self.cursor.execute(
+            """SELECT t.id, t.name FROM tags t
+            JOIN observation_tags ot ON t.id = ot.tag_id
+            WHERE ot.observation_id = ?""",
+            (observation_id,)
+        )
+        return self.cursor.fetchall()
+
+    def export_lifelist(self, lifelist_id, export_path, include_photos=True):
+        """Export a lifelist to a portable format (JSON + photos)"""
+        try:
+            # Get lifelist info
+            self.cursor.execute("SELECT id, name, taxonomy FROM lifelists WHERE id = ?", (lifelist_id,))
+            lifelist = self.cursor.fetchone()
+
+            if not lifelist:
+                return False
+
+            lifelist_data = {
+                "id": lifelist[0],
+                "name": lifelist[1],
+                "taxonomy": lifelist[2],
+                "custom_fields": [],
+                "observations": []
+            }
+
+            # Get custom fields
+            self.cursor.execute(
+                "SELECT id, field_name, field_type FROM custom_fields WHERE lifelist_id = ?",
+                (lifelist_id,)
+            )
+            for field in self.cursor.fetchall():
+                lifelist_data["custom_fields"].append({
+                    "id": field[0],
+                    "name": field[1],
+                    "type": field[2]
+                })
+
+            # Get observations
+            self.cursor.execute(
+                """SELECT id, species_name, observation_date, location, 
+                latitude, longitude, tier, notes FROM observations 
+                WHERE lifelist_id = ?""",
+                (lifelist_id,)
+            )
+
+            observations = self.cursor.fetchall()
+            photos_dir = os.path.join(export_path, "photos")
+            os.makedirs(photos_dir, exist_ok=True)
+
+            for obs in observations:
+                obs_data = {
+                    "id": obs[0],
+                    "species_name": obs[1],
+                    "observation_date": obs[2],
+                    "location": obs[3],
+                    "latitude": obs[4],
+                    "longitude": obs[5],
+                    "tier": obs[6],
+                    "notes": obs[7],
+                    "custom_fields": [],
+                    "tags": [],
+                    "photos": []
+                }
+
+                # Get custom field values
+                self.cursor.execute(
+                    """SELECT cf.field_name, ocf.value
+                    FROM observation_custom_fields ocf
+                    JOIN custom_fields cf ON ocf.field_id = cf.id
+                    WHERE ocf.observation_id = ?""",
+                    (obs[0],)
+                )
+
+                for field_val in self.cursor.fetchall():
+                    obs_data["custom_fields"].append({
+                        "field_name": field_val[0],
+                        "value": field_val[1]
+                    })
+
+                # Get tags
+                self.cursor.execute(
+                    """SELECT t.name
+                    FROM tags t
+                    JOIN observation_tags ot ON t.id = ot.tag_id
+                    WHERE ot.observation_id = ?""",
+                    (obs[0],)
+                )
+
+                obs_data["tags"] = [tag[0] for tag in self.cursor.fetchall()]
+
+                # Get photos
+                self.cursor.execute(
+                    """SELECT id, file_path, is_primary, latitude, longitude, taken_date
+                    FROM photos WHERE observation_id = ?""",
+                    (obs[0],)
+                )
+
+                for photo in self.cursor.fetchall():
+                    photo_file = os.path.basename(photo[1])
+                    photo_data = {
+                        "id": photo[0],
+                        "file_name": photo_file,
+                        "is_primary": bool(photo[2]),
+                        "latitude": photo[3],
+                        "longitude": photo[4],
+                        "taken_date": photo[5]
+                    }
+
+                    obs_data["photos"].append(photo_data)
+
+                    # Copy the photo file if it exists and if include_photos is True
+                    if include_photos and os.path.exists(photo[1]):
+                        shutil.copy2(photo[1], os.path.join(photos_dir, photo_file))
+
+                lifelist_data["observations"].append(obs_data)
+
+            # Write the JSON file
+            with open(os.path.join(export_path, f"{lifelist_data['name']}.json"), 'w') as f:
+                json.dump(lifelist_data, f, indent=2)
+
+            return True
+        except Exception as e:
+            print(f"Export error: {e}")
+            return False
+
+    def import_lifelist(self, json_path, photos_dir=None):
+        """Import a lifelist from a JSON file"""
+        try:
+            with open(json_path, 'r') as f:
+                lifelist_data = json.load(f)
+
+            # Create the lifelist
+            lifelist_name = lifelist_data["name"]
+            taxonomy = lifelist_data.get("taxonomy")
+
+            # Check if lifelist already exists
+            self.cursor.execute("SELECT id FROM lifelists WHERE name = ?", (lifelist_name,))
+            existing = self.cursor.fetchone()
+
+            if existing:
+                return False, f"Lifelist '{lifelist_name}' already exists"
+
+            lifelist_id = self.create_lifelist(lifelist_name, taxonomy)
+
+            # Create custom fields
+            field_id_mapping = {}
+            for field in lifelist_data.get("custom_fields", []):
+                new_id = self.add_custom_field(lifelist_id, field["name"], field["type"])
+                field_id_mapping[field["id"]] = new_id
+
+            # Import observations
+            for obs in lifelist_data.get("observations", []):
+                obs_id = self.add_observation(
+                    lifelist_id,
+                    obs["species_name"],
+                    obs.get("observation_date"),
+                    obs.get("location"),
+                    obs.get("latitude"),
+                    obs.get("longitude"),
+                    obs.get("tier", "wild"),
+                    obs.get("notes")
+                )
+
+                # Add custom field values
+                for field in obs.get("custom_fields", []):
+                    field_name = field["field_name"]
+                    # Find the field ID
+                    self.cursor.execute(
+                        "SELECT id FROM custom_fields WHERE lifelist_id = ? AND field_name = ?",
+                        (lifelist_id, field_name)
+                    )
+                    field_result = self.cursor.fetchone()
+                    if field_result:
+                        field_id = field_result[0]
+                        self.cursor.execute(
+                            "INSERT INTO observation_custom_fields (observation_id, field_id, value) VALUES (?, ?, ?)",
+                            (obs_id, field_id, field["value"])
+                        )
+
+                # Add tags
+                for tag_name in obs.get("tags", []):
+                    tag_id = self.add_tag(tag_name)
+                    self.add_tag_to_observation(obs_id, tag_id)
+
+                # Add photos
+                if photos_dir:
+                    for photo in obs.get("photos", []):
+                        photo_path = os.path.join(photos_dir, photo["file_name"])
+                        if os.path.exists(photo_path):
+                            self.add_photo(
+                                obs_id,
+                                photo_path,
+                                photo.get("is_primary", 0),
+                                photo.get("latitude"),
+                                photo.get("longitude"),
+                                photo.get("taken_date")
+                            )
+
+            self.conn.commit()
+            return True, f"Successfully imported lifelist '{lifelist_name}'"
+        except Exception as e:
+            print(f"Import error: {e}")
+            return False, f"Error importing lifelist: {str(e)}"
+
+    def close(self):
+        self.conn.close()
+
+
+class PhotoUtils:
+    @staticmethod
+    def extract_exif_data(photo_path):
+        """Extract EXIF data from a photo file"""
+        try:
+            with open(photo_path, 'rb') as f:
+                tags = exifread.process_file(f)
+
+            # Extract GPS coordinates if available
+            lat = None
+            lon = None
+            date_taken = None
+
+            if 'GPS GPSLatitude' in tags and 'GPS GPSLatitudeRef' in tags:
+                lat_ref = tags['GPS GPSLatitudeRef'].values
+                lat_values = tags['GPS GPSLatitude'].values
+                lat = PhotoUtils._convert_to_degrees(lat_values)
+                if lat_ref == 'S':
+                    lat = -lat
+
+            if 'GPS GPSLongitude' in tags and 'GPS GPSLongitudeRef' in tags:
+                lon_ref = tags['GPS GPSLongitudeRef'].values
+                lon_values = tags['GPS GPSLongitude'].values
+                lon = PhotoUtils._convert_to_degrees(lon_values)
+                if lon_ref == 'W':
+                    lon = -lon
+
+            # Get date taken
+            if 'EXIF DateTimeOriginal' in tags:
+                date_str = str(tags['EXIF DateTimeOriginal'])
+                try:
+                    date_taken = datetime.strptime(date_str, '%Y:%m:%d %H:%M:%S')
+                except ValueError:
+                    date_taken = None
+
+            return lat, lon, date_taken
+        except Exception as e:
+            print(f"Error extracting EXIF data: {e}")
+            return None, None, None
+
+    @staticmethod
+    def _convert_to_degrees(values):
+        """Helper method to convert GPS coordinates from EXIF to decimal degrees"""
+        d = float(values[0].num) / float(values[0].den)
+        m = float(values[1].num) / float(values[1].den)
+        s = float(values[2].num) / float(values[2].den)
+        return d + (m / 60.0) + (s / 3600.0)
+
+    @staticmethod
+    def resize_image_for_thumbnail(img_path, size=(100, 100)):
+        """Resize an image to create a thumbnail"""
+        try:
+            img = Image.open(img_path)
+            img.thumbnail(size)
+            return ImageTk.PhotoImage(img)
+        except Exception as e:
+            print(f"Error creating thumbnail: {e}")
+            return None
+
+
+class MapGenerator:
+    @staticmethod
+    def create_observation_map(observations, db, output_path="observation_map.html"):
+        """Create a map showing all observation locations"""
+        # Create a map centered on the first observation with coordinates
+        map_center = [0, 0]
+        has_coords = False
+        valid_markers = 0
+
+        # First pass - check if any observations have coordinates
+        for obs in observations:
+            obs_id = obs[0]
+            obs_details = db.get_observation_details(obs_id)[0]
+
+            # Check observation coordinates
+            if obs_details and obs_details[5] is not None and obs_details[6] is not None:
+                map_center = [obs_details[5], obs_details[6]]
+                has_coords = True
+                valid_markers += 1
+                continue
+
+            # Check photo coordinates
+            photos = db.get_photos(obs_id)
+            for photo in photos:
+                if photo[3] is not None and photo[4] is not None:  # lat and lon
+                    map_center = [photo[3], photo[4]]
+                    has_coords = True
+                    valid_markers += 1
+                    break
+
+        # If no coordinates found, return error
+        if not has_coords:
+            return None, "No coordinates available in any observations or photos"
+
+        # Create map
+        m = folium.Map(location=map_center, zoom_start=5)
+
+        # Add markers for each observation
+        marker_cluster = MarkerCluster().add_to(m)
+
+        for obs in observations:
+            obs_id, species_name, obs_date, location, tier = obs
+
+            # Try to get coordinates from observation
+            lat, lon = None, None
+
+            obs_details = db.get_observation_details(obs_id)[0]
+            if obs_details and obs_details[5] is not None and obs_details[6] is not None:
+                lat, lon = obs_details[5], obs_details[6]
+
+            # If no coordinates in observation, try photos
+            if lat is None or lon is None:
+                photos = db.get_photos(obs_id)
+                for photo in photos:
+                    if photo[3] is not None and photo[4] is not None:  # lat and lon
+                        lat, lon = photo[3], photo[4]
+                        break
+
+            if lat is not None and lon is not None:
+                popup_content = f"""
+                <strong>{species_name}</strong><br>
+                Date: {obs_date or 'Unknown'}<br>
+                Location: {location or 'Unknown'}<br>
+                Tier: {tier or 'Unknown'}
+                """
+
+                folium.Marker(
+                    [lat, lon],
+                    popup=folium.Popup(popup_content, max_width=300),
+                    tooltip=species_name
+                ).add_to(marker_cluster)
+
+        # Save the map
+        m.save(output_path)
+        return output_path, f"{valid_markers} location(s) plotted on map"
+
+
+class LifelistApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Lifelist Manager")
+        self.root.geometry("1200x800")
+
+        # Initialize database
+        self.db = Database()
+
+        # Set up the main container
+        self.main_container = ctk.CTkFrame(self.root)
+        self.main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Create sidebar
+        self.sidebar = ctk.CTkFrame(self.main_container, width=250)
+        self.sidebar.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+
+        # Create content area
+        self.content = ctk.CTkFrame(self.main_container)
+        self.content.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Create welcome screen
+        self.welcome_frame = ctk.CTkFrame(self.content)
+        self.welcome_frame.pack(fill=tk.BOTH, expand=True)
+
+        welcome_label = ctk.CTkLabel(
+            self.welcome_frame,
+            text="Welcome to Lifelist Manager",
+            font=ctk.CTkFont(size=24, weight="bold")
+        )
+        welcome_label.pack(pady=20)
+
+        intro_text = """
+        Lifelist Manager helps you track and catalog your observations.
+
+        - Create different lifelists for birds, reptiles, astronomical objects, etc.
+        - Add custom fields to track specific information for each observation
+        - Attach photos to observations and select primary thumbnails
+        - Filter observations by tags and tiers
+        - View locations on an interactive map
+
+        Get started by selecting or creating a lifelist from the sidebar.
+        """
+
+        intro_label = ctk.CTkLabel(
+            self.welcome_frame,
+            text=intro_text,
+            font=ctk.CTkFont(size=14),
+            justify="left",
+            wraplength=600
+        )
+        intro_label.pack(pady=10)
+
+        # Current lifelist and observation state
+        self.current_lifelist_id = None
+        self.current_observation_id = None
+
+        # Set up the sidebar with lifelists
+        self.setup_sidebar()
+
+    def setup_sidebar(self):
+        # Clear existing widgets
+        for widget in self.sidebar.winfo_children():
+            widget.destroy()
+
+        # Add title
+        sidebar_title = ctk.CTkLabel(
+            self.sidebar,
+            text="My Lifelists",
+            font=ctk.CTkFont(size=18, weight="bold")
+        )
+        sidebar_title.pack(pady=10)
+
+        # Add lifelists
+        lifelists = self.db.get_lifelists()
+
+        if lifelists:
+            for lifelist in lifelists:
+                lifelist_btn = ctk.CTkButton(
+                    self.sidebar,
+                    text=lifelist[1],
+                    command=lambda lid=lifelist[0], lname=lifelist[1]: self.open_lifelist(lid, lname)
+                )
+                lifelist_btn.pack(pady=5, padx=10, fill=tk.X)
+
+        # Add buttons for creating, importing, and exporting lifelists
+        separator = ctk.CTkFrame(self.sidebar, height=2, fg_color="gray70")
+        separator.pack(fill=tk.X, padx=10, pady=15)
+
+        create_btn = ctk.CTkButton(
+            self.sidebar,
+            text="Create New Lifelist",
+            command=self.show_create_lifelist_dialog
+        )
+        create_btn.pack(pady=5, padx=10, fill=tk.X)
+
+        import_btn = ctk.CTkButton(
+            self.sidebar,
+            text="Import Lifelist",
+            command=self.import_lifelist
+        )
+        import_btn.pack(pady=5, padx=10, fill=tk.X)
+
+        # Only show export if a lifelist is selected
+        if self.current_lifelist_id:
+            export_btn = ctk.CTkButton(
+                self.sidebar,
+                text="Export Current Lifelist",
+                command=self.export_lifelist
+            )
+            export_btn.pack(pady=5, padx=10, fill=tk.X)
+
+            delete_btn = ctk.CTkButton(
+                self.sidebar,
+                text="Delete Current Lifelist",
+                fg_color="red3",
+                hover_color="red4",
+                command=self.delete_current_lifelist
+            )
+            delete_btn.pack(pady=5, padx=10, fill=tk.X)
+
+    def show_create_lifelist_dialog(self):
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Create New Lifelist")
         dialog.geometry("400x300")
+        dialog.transient(self.root)
         dialog.grab_set()
 
-        ttk.Label(dialog, text="Name:").grid(row=0, column=0, sticky="w", padx=10, pady=10)
-        name_var = tk.StringVar()
-        ttk.Entry(dialog, textvariable=name_var, width=30).grid(row=0, column=1, padx=10, pady=10)
+        # Center the dialog
+        dialog.update_idletasks()
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+        x = (dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (dialog.winfo_screenheight() // 2) - (height // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
 
-        ttk.Label(dialog, text="Description:").grid(row=1, column=0, sticky="nw", padx=10, pady=10)
-        description_text = tk.Text(dialog, width=30, height=5)
-        description_text.grid(row=1, column=1, padx=10, pady=10)
+        # Add form fields
+        ctk.CTkLabel(dialog, text="Lifelist Name:").pack(pady=(20, 5))
+        name_entry = ctk.CTkEntry(dialog, width=300)
+        name_entry.pack(pady=5)
 
-        ttk.Label(dialog, text="Taxonomy Source:").grid(row=2, column=0, sticky="w", padx=10, pady=10)
-        taxonomy_var = tk.StringVar()
-        ttk.Entry(dialog, textvariable=taxonomy_var, width=30).grid(row=2, column=1, padx=10, pady=10)
+        ctk.CTkLabel(dialog, text="Taxonomy Reference (optional):").pack(pady=(10, 5))
+        taxonomy_entry = ctk.CTkEntry(dialog, width=300)
+        taxonomy_entry.pack(pady=5)
 
-        def save_lifelist():
-            name = name_var.get().strip()
+        # Custom fields section
+        ctk.CTkLabel(dialog, text="Custom Fields:").pack(pady=(15, 5))
+
+        custom_fields_frame = ctk.CTkFrame(dialog)
+        custom_fields_frame.pack(pady=5, fill=tk.X, padx=20)
+
+        custom_fields = []
+
+        def add_custom_field_row():
+            row_frame = ctk.CTkFrame(custom_fields_frame)
+            row_frame.pack(pady=2, fill=tk.X)
+
+            field_name = ctk.CTkEntry(row_frame, width=150, placeholder_text="Field Name")
+            field_name.pack(side=tk.LEFT, padx=5)
+
+            field_type = ctk.CTkComboBox(row_frame, values=["text", "number", "date", "boolean"])
+            field_type.pack(side=tk.LEFT, padx=5)
+
+            remove_btn = ctk.CTkButton(
+                row_frame,
+                text="✕",
+                width=30,
+                command=lambda: remove_field_row(row_frame)
+            )
+            remove_btn.pack(side=tk.LEFT, padx=5)
+
+            custom_fields.append((field_name, field_type, row_frame))
+
+        def remove_field_row(row):
+            for i, (_, _, frame) in enumerate(custom_fields):
+                if frame == row:
+                    custom_fields.pop(i)
+                    break
+            row.destroy()
+
+        # Add the first custom field row
+        add_custom_field_row()
+
+        # Button to add more custom fields
+        add_field_btn = ctk.CTkButton(
+            dialog,
+            text="+ Add Another Field",
+            command=add_custom_field_row
+        )
+        add_field_btn.pack(pady=10)
+
+        # Create lifelist button
+        def create_lifelist():
+            name = name_entry.get().strip()
+            taxonomy = taxonomy_entry.get().strip() or None
+
             if not name:
                 messagebox.showerror("Error", "Lifelist name is required")
                 return
 
-            description = description_text.get("1.0", tk.END).strip()
-            taxonomy = taxonomy_var.get().strip()
+            # Create the lifelist
+            lifelist_id = self.db.create_lifelist(name, taxonomy)
 
-            lifelist_id = str(uuid.uuid4())
-            now = datetime.now().isoformat()
+            if lifelist_id is None:
+                messagebox.showerror("Error", f"A lifelist named '{name}' already exists")
+                return
 
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO lifelists (id, name, description, taxonomy_source, created_date, modified_date, custom_fields) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (lifelist_id, name, description, taxonomy, now, now, json.dumps([]))
-            )
-            conn.commit()
-            conn.close()
+            # Add custom fields
+            for field_name_entry, field_type_combobox, _ in custom_fields:
+                field_name = field_name_entry.get().strip()
+                field_type = field_type_combobox.get()
 
-            self.load_lifelists()
+                if field_name:
+                    self.db.add_custom_field(lifelist_id, field_name, field_type)
+
+            # Refresh sidebar and open the new lifelist
+            self.setup_sidebar()
+            self.open_lifelist(lifelist_id, name)
+
             dialog.destroy()
 
-        buttons_frame = ttk.Frame(dialog)
-        buttons_frame.grid(row=3, column=0, columnspan=2, pady=20)
+        create_btn = ctk.CTkButton(
+            dialog,
+            text="Create Lifelist",
+            command=create_lifelist
+        )
+        create_btn.pack(pady=15)
 
-        ttk.Button(buttons_frame, text="Save", command=save_lifelist).pack(side=tk.LEFT, padx=10)
-        ttk.Button(buttons_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=10)
+    def open_lifelist(self, lifelist_id, lifelist_name):
+        self.current_lifelist_id = lifelist_id
+        self.current_observation_id = None
 
-    def on_lifelist_select(self, event):
-        """Handle lifelist selection"""
-        selected_items = self.lifelist_treeview.selection()
-        if selected_items:
-            self.current_lifelist = selected_items[0]
-            self.load_observations()
-            self.load_tags_filter()
-        else:
-            self.current_lifelist = None
-            self.clear_observations()
+        # Update sidebar to show export option
+        self.setup_sidebar()
 
-    def load_tags_filter(self):
-        """Load tags for the selected lifelist for filtering"""
-        # Clear existing filter checkboxes
-        for widget in self.tags_filter_frame.winfo_children():
-            if widget.cget("text") != "Filter by Tags":  # Keep the label
-                widget.destroy()
-
-        if not self.current_lifelist:
-            return
-
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-
-        # Get all tags used in this lifelist
-        query = """
-        SELECT DISTINCT t.id, t.name 
-        FROM tags t
-        JOIN observation_tags ot ON t.id = ot.tag_id
-        JOIN observations o ON ot.observation_id = o.id
-        WHERE o.lifelist_id = ?
-        ORDER BY t.name
-        """
-
-        cursor.execute(query, (self.current_lifelist,))
-        tags = cursor.fetchall()
-        conn.close()
-
-        # Create tag filter checkboxes
-        if not tags:
-            ctk.CTkLabel(self.tags_filter_frame, text="No tags available").pack(padx=5, pady=5)
-            return
-
-        # Create a tag container frame with wrapping
-        tags_container = ctk.CTkFrame(self.tags_filter_frame)
-        tags_container.pack(fill=tk.X, padx=5, pady=5)
-
-        # Set grid for dynamic wrapping
-        row, col = 0, 0
-        max_cols = 3
-
-        for tag_id, tag_name in tags:
-            # Create a custom styled checkbox
-            var = tk.BooleanVar()
-            cb = ctk.CTkCheckBox(
-                tags_container,
-                text=tag_name,
-                variable=var,
-                command=lambda id=tag_id, v=var: self.toggle_tag_filter(id, v.get()),
-                border_width=1,
-                corner_radius=8
-            )
-
-            # Arrange checkboxes in a grid with wrapping
-            cb.grid(row=row, column=col, sticky="w", padx=5, pady=2)
-            col += 1
-            if col >= max_cols:
-                col = 0
-                row += 1
-
-    def toggle_tag_filter(self, tag_id, selected):
-        """Toggle a tag in the filter set and reload observations"""
-        if selected:
-            self.tag_filter.add(tag_id)
-        else:
-            self.tag_filter.discard(tag_id)
-
-        self.load_observations()
-
-    def filter_observations(self, value=None):
-        """Filter observations based on tier selection"""
-        self.load_observations()
-
-    def on_search_change(self, *args):
-        """Handle search text changes"""
-        self.load_observations()
-
-    def clear_observations(self):
-        """Clear the observations list"""
-        for widget in self.observations_frame.winfo_children():
+        # Clear the content area
+        for widget in self.content.winfo_children():
             widget.destroy()
 
-        self.observation_rows = {}
-        self.observation_widgets = []
-        self.clear_observation_details()
+        # Create lifelist view
+        self.lifelist_frame = ctk.CTkFrame(self.content)
+        self.lifelist_frame.pack(fill=tk.BOTH, expand=True)
 
-    def show_obs_context_menu(self, event, obs_id):
-        """Show the observation context menu on right-click"""
-        self.current_observation = obs_id
-        self.obs_context_menu.post(event.x_root, event.y_root)
+        # Header with lifelist name and add observation button
+        header_frame = ctk.CTkFrame(self.lifelist_frame)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
 
-        # Update visual selection
-        for widget in self.observation_widgets:
-            widget.configure(fg_color=("gray85", "gray25"))  # Default color
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text=lifelist_name,
+            font=ctk.CTkFont(size=20, weight="bold")
+        )
+        title_label.pack(side=tk.LEFT, padx=10)
 
-        if obs_id in self.observation_rows:
-            self.observation_rows[obs_id].configure(fg_color=("gray75", "gray35"))  # Selected color
+        # Add the map button
+        map_btn = ctk.CTkButton(
+            header_frame,
+            text="View Map",
+            command=self.view_map
+        )
+        map_btn.pack(side=tk.RIGHT, padx=5)
 
-    def toggle_tag_filter(self, tag_id, selected):
-        """Toggle a tag in the filter set and reload observations"""
-        if selected:
-            self.tag_filter.add(tag_id)
-        else:
-            self.tag_filter.discard(tag_id)
+        add_btn = ctk.CTkButton(
+            header_frame,
+            text="Add Observation",
+            command=lambda: self.show_observation_form()
+        )
+        add_btn.pack(side=tk.RIGHT, padx=5)
 
+        # Search and filter section
+        filter_frame = ctk.CTkFrame(self.lifelist_frame)
+        filter_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        # Search box
+        search_var = tk.StringVar()
+        search_label = ctk.CTkLabel(filter_frame, text="Search:")
+        search_label.pack(side=tk.LEFT, padx=5)
+
+        search_entry = ctk.CTkEntry(filter_frame, textvariable=search_var, width=200)
+        search_entry.pack(side=tk.LEFT, padx=5)
+
+        # Tier filter
+        tier_label = ctk.CTkLabel(filter_frame, text="Tier:")
+        tier_label.pack(side=tk.LEFT, padx=(15, 5))
+
+        tiers = ["All"] + self.db.get_all_tiers(lifelist_id)
+        tier_var = tk.StringVar(value="All")
+        tier_dropdown = ctk.CTkComboBox(filter_frame, values=tiers, variable=tier_var)
+        tier_dropdown.pack(side=tk.LEFT, padx=5)
+
+        # Tag filter (multiselect)
+        self.selected_tag_ids = []
+
+        tag_label = ctk.CTkLabel(filter_frame, text="Tags:")
+        tag_label.pack(side=tk.LEFT, padx=(15, 5))
+
+        tag_btn = ctk.CTkButton(
+            filter_frame,
+            text="Select Tags",
+            command=self.show_tag_filter_dialog
+        )
+        tag_btn.pack(side=tk.LEFT, padx=5)
+
+        # Clear filters button
+        clear_btn = ctk.CTkButton(
+            filter_frame,
+            text="Clear Filters",
+            command=lambda: self.clear_filters(search_var, tier_var)
+        )
+        clear_btn.pack(side=tk.RIGHT, padx=5)
+
+        # Apply filters button
+        apply_btn = ctk.CTkButton(
+            filter_frame,
+            text="Apply Filters",
+            command=lambda: self.apply_filters(search_var.get(), tier_var.get())
+        )
+        apply_btn.pack(side=tk.RIGHT, padx=5)
+
+        # Observation list
+        list_frame = ctk.CTkFrame(self.lifelist_frame)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Scrollable frame for observations
+        self.observation_list_canvas = tk.Canvas(list_frame, bg="#2b2b2b", highlightthickness=0)
+        scrollbar = ctk.CTkScrollbar(list_frame, orientation="vertical", command=self.observation_list_canvas.yview)
+        self.observation_list_canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.observation_list_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.observations_container = ctk.CTkFrame(self.observation_list_canvas)
+        self.observation_list_canvas.create_window((0, 0), window=self.observations_container, anchor="nw")
+
+        self.observations_container.bind("<Configure>", self.on_frame_configure)
+        self.observation_list_canvas.bind("<Configure>", self.on_canvas_configure)
+
+        # Header for the list
+        header = ctk.CTkFrame(self.observations_container)
+        header.pack(fill=tk.X, padx=5, pady=5)
+
+        ctk.CTkLabel(header, text="Species", width=200).pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(header, text="Date", width=100).pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(header, text="Location", width=200).pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(header, text="Tier", width=100).pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(header, text="Actions", width=100).pack(side=tk.LEFT, padx=5)
+
+        # Load observations
         self.load_observations()
 
-    def filter_observations(self, event=None):
-        """Filter observations based on tier selection"""
-        self.load_observations()
+    def on_frame_configure(self, event):
+        self.observation_list_canvas.configure(scrollregion=self.observation_list_canvas.bbox("all"))
 
-    def on_search_change(self, *args):
-        """Handle search text changes"""
-        self.load_observations()
+    def on_canvas_configure(self, event):
+        self.observation_list_canvas.itemconfig("win", width=event.width)
 
-    def clear_observations(self):
-        """Clear the observations list"""
-        self.observations_treeview.delete(*self.observations_treeview.get_children())
-        self.clear_observation_details()
+    def load_observations(self, search_term=None, tier=None):
+        # Clear existing observation items
+        for widget in self.observations_container.winfo_children()[1:]:  # Skip the header
+            widget.destroy()
 
-    def on_observation_select(self, event):
-        """Handle observation selection"""
-        selected_items = self.observations_treeview.selection()
-        if selected_items:
-            self.current_observation = selected_items[0]
-            self.load_observation_details()
-        else:
-            self.current_observation = None
-            self.clear_observation_details()
+        # Get filtered observations
+        if tier == "All":
+            tier = None
 
-    def add_observation(self):
-        """Add a new observation to the current lifelist"""
-        if not self.current_lifelist:
-            messagebox.showinfo("Information", "Please select a lifelist first")
+        observations = self.db.get_observations(
+            self.current_lifelist_id,
+            tier=tier,
+            tag_ids=self.selected_tag_ids if self.selected_tag_ids else None,
+            search_term=search_term
+        )
+
+        if not observations:
+            no_results = ctk.CTkLabel(
+                self.observations_container,
+                text="No observations found",
+                font=ctk.CTkFont(size=14)
+            )
+            no_results.pack(pady=20)
             return
 
-        self.open_observation_dialog()
+        # Add each observation to the list
+        for obs in observations:
+            obs_id, species_name, obs_date, location, tier = obs
 
-    def edit_observation(self):
-        """Edit the selected observation"""
-        if not self.current_observation:
-            messagebox.showinfo("Information", "Please select an observation first")
-            return
+            item = ctk.CTkFrame(self.observations_container)
+            item.pack(fill=tk.X, padx=5, pady=2)
 
-        self.open_observation_dialog(self.current_observation)
+            # Try to get the primary photo for this observation
+            photo_thumbnail = None
+            photos = self.db.get_photos(obs_id)
 
-    def open_observation_dialog(self, observation_id=None):
-        """Open dialog to add or edit an observation"""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Observation" if not observation_id else "Edit Observation")
-        dialog.geometry("500x600")
+            for photo in photos:
+                if photo[2]:  # is_primary
+                    thumbnail = PhotoUtils.resize_image_for_thumbnail(photo[1])
+                    if thumbnail:
+                        photo_thumbnail = thumbnail
+                        break
+
+            # Species name (with thumbnail if available)
+            species_frame = ctk.CTkFrame(item)
+            species_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+
+            if photo_thumbnail:
+                thumbnail_label = ctk.CTkLabel(species_frame, text="", image=photo_thumbnail)
+                thumbnail_label.pack(side=tk.LEFT, padx=5)
+                thumbnail_label.image = photo_thumbnail  # Keep a reference
+
+            species_label = ctk.CTkLabel(species_frame, text=species_name, width=180)
+            species_label.pack(side=tk.LEFT, padx=5)
+
+            # Other fields
+            date_label = ctk.CTkLabel(item, text=obs_date or "N/A", width=100)
+            date_label.pack(side=tk.LEFT, padx=5)
+
+            location_label = ctk.CTkLabel(item, text=location or "N/A", width=200)
+            location_label.pack(side=tk.LEFT, padx=5)
+
+            tier_label = ctk.CTkLabel(item, text=tier or "N/A", width=100)
+            tier_label.pack(side=tk.LEFT, padx=5)
+
+            # Action buttons
+            actions_frame = ctk.CTkFrame(item)
+            actions_frame.pack(side=tk.LEFT, padx=5)
+
+            view_btn = ctk.CTkButton(
+                actions_frame,
+                text="View",
+                width=70,
+                command=lambda o_id=obs_id: self.view_observation(o_id)
+            )
+            view_btn.pack(side=tk.LEFT, padx=2)
+
+            edit_btn = ctk.CTkButton(
+                actions_frame,
+                text="Edit",
+                width=70,
+                command=lambda o_id=obs_id: self.show_observation_form(o_id)
+            )
+            edit_btn.pack(side=tk.LEFT, padx=2)
+
+    def apply_filters(self, search_term, tier):
+        self.load_observations(
+            search_term=search_term if search_term else None,
+            tier=tier
+        )
+
+    def clear_filters(self, search_var, tier_var):
+        search_var.set("")
+        tier_var.set("All")
+        self.selected_tag_ids = []
+        self.load_observations()
+
+    def show_tag_filter_dialog(self):
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Select Tags")
+        dialog.geometry("300x400")
+        dialog.transient(self.root)
         dialog.grab_set()
 
-        # Get custom fields for this lifelist
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute("SELECT custom_fields FROM lifelists WHERE id = ?", (self.current_lifelist,))
-        result = cursor.fetchone()
-        custom_fields = json.loads(result[0]) if result else []
-
-        # Get observation data if editing
-        observation_data = None
-        if observation_id:
-            cursor.execute("SELECT * FROM observations WHERE id = ?", (observation_id,))
-            observation_data = cursor.fetchone()
-
-        conn.close()
-
-        # Create a notebook for tabs
-        notebook = ttk.Notebook(dialog)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # Basic info tab
-        basic_frame = ttk.Frame(notebook)
-        notebook.add(basic_frame, text="Basic Info")
-
-        # Species
-        ttk.Label(basic_frame, text="Species:").grid(row=0, column=0, sticky="w", padx=10, pady=10)
-        species_var = tk.StringVar()
-        if observation_data:
-            species_var.set(observation_data[2])
-        ttk.Entry(basic_frame, textvariable=species_var, width=30).grid(row=0, column=1, padx=10, pady=10)
-
-        # Tier
-        ttk.Label(basic_frame, text="Tier:").grid(row=1, column=0, sticky="w", padx=10, pady=10)
-        tier_var = tk.StringVar(value="Wild" if not observation_data else observation_data[3])
-        tier_combo = ttk.Combobox(basic_frame, textvariable=tier_var, values=["Wild", "Captive"])
-        tier_combo.grid(row=1, column=1, padx=10, pady=10)
-
-        # Date
-        ttk.Label(basic_frame, text="Date:").grid(row=2, column=0, sticky="w", padx=10, pady=10)
-        date_var = tk.StringVar()
-        if observation_data and observation_data[4]:
-            date_var.set(observation_data[4])
-        else:
-            date_var.set(datetime.now().strftime("%Y-%m-%d"))
-        ttk.Entry(basic_frame, textvariable=date_var, width=30).grid(row=2, column=1, padx=10, pady=10)
-
-        # Location
-        ttk.Label(basic_frame, text="Location:").grid(row=3, column=0, sticky="w", padx=10, pady=10)
-        location_var = tk.StringVar()
-        if observation_data:
-            location_var.set(observation_data[5] or "")
-        ttk.Entry(basic_frame, textvariable=location_var, width=30).grid(row=3, column=1, padx=10, pady=10)
-
-        # Notes
-        ttk.Label(basic_frame, text="Notes:").grid(row=4, column=0, sticky="nw", padx=10, pady=10)
-        notes_text = tk.Text(basic_frame, width=30, height=5)
-        notes_text.grid(row=4, column=1, padx=10, pady=10)
-        if observation_data and observation_data[6]:
-            notes_text.insert("1.0", observation_data[6])
-
-        # Coordinates
-        ttk.Label(basic_frame, text="Latitude:").grid(row=5, column=0, sticky="w", padx=10, pady=10)
-        lat_var = tk.StringVar()
-        if observation_data and observation_data[7]:
-            lat_var.set(str(observation_data[7]))
-        ttk.Entry(basic_frame, textvariable=lat_var, width=30).grid(row=5, column=1, padx=10, pady=10)
-
-        ttk.Label(basic_frame, text="Longitude:").grid(row=6, column=0, sticky="w", padx=10, pady=10)
-        lon_var = tk.StringVar()
-        if observation_data and observation_data[8]:
-            lon_var.set(str(observation_data[8]))
-        ttk.Entry(basic_frame, textvariable=lon_var, width=30).grid(row=6, column=1, padx=10, pady=10)
-
-        # Custom fields tab
-        custom_frame = ttk.Frame(notebook)
-        notebook.add(custom_frame, text="Custom Fields")
-
-        custom_entries = {}
-        custom_data = {}
-
-        if observation_data and observation_data[9]:
-            custom_data = json.loads(observation_data[9])
-
-        for i, field in enumerate(custom_fields):
-            ttk.Label(custom_frame, text=f"{field}:").grid(row=i, column=0, sticky="w", padx=10, pady=10)
-            custom_var = tk.StringVar()
-            if field in custom_data:
-                custom_var.set(custom_data[field])
-            custom_entries[field] = custom_var
-            ttk.Entry(custom_frame, textvariable=custom_var, width=30).grid(row=i, column=1, padx=10, pady=10)
-
-        # Tags tab
-        tags_frame = ttk.Frame(notebook)
-        notebook.add(tags_frame, text="Tags")
-
-        # Existing tags
-        existing_tags_frame = ttk.LabelFrame(tags_frame, text="Existing Tags")
-        existing_tags_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Center the dialog
+        dialog.update_idletasks()
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+        x = (dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (dialog.winfo_screenheight() // 2) - (height // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
 
         # Get all tags
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, name FROM tags ORDER BY name")
-        all_tags = cursor.fetchall()
+        all_tags = self.db.get_all_tags()
 
-        # Get tags for this observation if editing
-        selected_tags = set()
-        if observation_id:
-            cursor.execute("SELECT tag_id FROM observation_tags WHERE observation_id = ?", (observation_id,))
-            selected_tags = set(row[0] for row in cursor.fetchall())
+        # Selected tags
+        selected_tags = set(self.selected_tag_ids)
 
-        conn.close()
+        ctk.CTkLabel(dialog, text="Select Tags to Filter By:", font=ctk.CTkFont(weight="bold")).pack(pady=10)
 
-        # Tag selection checkboxes
+        # Scrollable frame for tags
+        scroll_frame = ctk.CTkScrollableFrame(dialog)
+        scroll_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Tag checkboxes
         tag_vars = {}
-        for i, (tag_id, tag_name) in enumerate(all_tags):
+
+        for tag_id, tag_name in all_tags:
             var = tk.BooleanVar(value=tag_id in selected_tags)
             tag_vars[tag_id] = var
-            ttk.Checkbutton(existing_tags_frame, text=tag_name, variable=var).grid(
-                row=i // 2, column=i % 2, sticky="w", padx=10, pady=5
+
+            checkbox = ctk.CTkCheckBox(
+                scroll_frame,
+                text=tag_name,
+                variable=var
             )
-
-        # New tag field
-        new_tag_frame = ttk.LabelFrame(tags_frame, text="Add New Tag")
-        new_tag_frame.pack(fill=tk.X, padx=10, pady=10)
-
-        ttk.Label(new_tag_frame, text="Tag Name:").grid(row=0, column=0, sticky="w", padx=10, pady=10)
-        new_tag_var = tk.StringVar()
-        ttk.Entry(new_tag_frame, textvariable=new_tag_var, width=20).grid(row=0, column=1, padx=10, pady=10)
-
-        new_tags = []
-
-        def add_new_tag():
-            tag_name = new_tag_var.get().strip()
-            if tag_name and tag_name not in [tag[1] for tag in all_tags] and tag_name not in new_tags:
-                new_tags.append(tag_name)
-                ttk.Label(existing_tags_frame, text=f"New: {tag_name}").grid(
-                    row=(len(all_tags) + len(new_tags) - 1) // 2,
-                    column=(len(all_tags) + len(new_tags) - 1) % 2,
-                    sticky="w", padx=10, pady=5
-                )
-                new_tag_var.set("")
-
-        ttk.Button(new_tag_frame, text="Add", command=add_new_tag).grid(row=0, column=2, padx=10, pady=10)
-
-        # Photos tab
-        photos_frame = ttk.Frame(notebook)
-        notebook.add(photos_frame, text="Photos")
-
-        # Current photos list
-        photos_list_frame = ttk.LabelFrame(photos_frame, text="Current Photos")
-        photos_list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        photos_listbox = tk.Listbox(photos_list_frame, width=50, height=10)
-        photos_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        photos_scrollbar = ttk.Scrollbar(photos_list_frame, orient=tk.VERTICAL, command=photos_listbox.yview)
-        photos_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        photos_listbox.config(yscrollcommand=photos_scrollbar.set)
-
-        # Get existing photos if editing
-        photos_data = []
-        if observation_id:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, filename, description, is_thumbnail FROM photos WHERE observation_id = ?",
-                           (observation_id,))
-            photos_data = cursor.fetchall()
-            conn.close()
-
-            for photo in photos_data:
-                thumbnail_mark = "* " if photo[3] else ""
-                photos_listbox.insert(tk.END, f"{thumbnail_mark}{os.path.basename(photo[1])} - {photo[2] or ''}")
-
-        # Photo buttons frame
-        photo_buttons_frame = ttk.Frame(photos_frame)
-        photo_buttons_frame.pack(fill=tk.X, padx=10, pady=10)
-
-        new_photos = []
-
-        def add_photo():
-            filepaths = filedialog.askopenfilenames(
-                title="Select Photos",
-                filetypes=(("Image files", "*.jpg *.jpeg *.png *.gif *.bmp"), ("All files", "*.*"))
-            )
-
-            for filepath in filepaths:
-                filename = os.path.basename(filepath)
-                description = ""
-                # Add to the list with a temporary description
-                photos_listbox.insert(tk.END, f"{filename} - {description}")
-                # Store the new photo data
-                new_photos.append((filepath, filename, description, False))
-
-        def set_thumbnail():
-            selected = photos_listbox.curselection()
-            if not selected:
-                messagebox.showinfo("Information", "Please select a photo")
-                return
-
-            # Update the listbox display
-            for i in range(photos_listbox.size()):
-                current_text = photos_listbox.get(i)
-                if current_text.startswith("* "):
-                    photos_listbox.delete(i)
-                    photos_listbox.insert(i, current_text[2:])
-
-            new_text = photos_listbox.get(selected[0])
-            if not new_text.startswith("* "):
-                photos_listbox.delete(selected[0])
-                photos_listbox.insert(selected[0], "* " + new_text)
-
-            # Update thumbnail status for existing photos
-            for i, photo in enumerate(photos_data):
-                photos_data[i] = (photo[0], photo[1], photo[2], i == selected[0] and selected[0] < len(photos_data))
-
-            # Update thumbnail status for new photos
-            for i in range(len(new_photos)):
-                path, name, desc, _ = new_photos[i]
-                new_photos[i] = (path, name, desc,
-                                 i + len(photos_data) == selected[0])
-
-        ttk.Button(photo_buttons_frame, text="Add Photos", command=add_photo).pack(side=tk.LEFT, padx=5)
-        ttk.Button(photo_buttons_frame, text="Set as Thumbnail", command=set_thumbnail).pack(side=tk.LEFT, padx=5)
-
-        def remove_photo():
-            selected = photos_listbox.curselection()
-            if not selected:
-                messagebox.showinfo("Information", "Please select a photo")
-                return
-
-            idx = selected[0]
-            if idx < len(photos_data):
-                # Mark existing photo for deletion
-                photos_data[idx] = (
-                photos_data[idx][0], photos_data[idx][1], photos_data[idx][2], photos_data[idx][3], True)
-            else:
-                # Remove new photo
-                new_photos.pop(idx - len(photos_data))
-
-            photos_listbox.delete(idx)
-
-        ttk.Button(photo_buttons_frame, text="Remove Photo", command=remove_photo).pack(side=tk.LEFT, padx=5)
-
-        # Save button
-        def save_observation():
-            species = species_var.get().strip()
-            if not species:
-                messagebox.showerror("Error", "Species name is required")
-                return
-
-            tier = tier_var.get()
-            date = date_var.get()
-            location = location_var.get()
-            notes = notes_text.get("1.0", tk.END).strip()
-
-            try:
-                latitude = float(lat_var.get()) if lat_var.get().strip() else None
-                longitude = float(lon_var.get()) if lon_var.get().strip() else None
-            except ValueError:
-                messagebox.showerror("Error", "Latitude and longitude must be valid numbers")
-                return
-
-            # Collect custom field values
-            custom_data = {}
-            for field, var in custom_entries.items():
-                custom_data[field] = var.get()
-
-            now = datetime.now().isoformat()
-
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-
-            # Start transaction
-            conn.execute("BEGIN TRANSACTION")
-
-            try:
-                # Create or update the observation
-                if not observation_id:
-                    # New observation
-                    new_id = str(uuid.uuid4())
-                    cursor.execute(
-                        """INSERT INTO observations (
-                            id, lifelist_id, species, tier, observation_date, location, notes, 
-                            latitude, longitude, custom_data, created_date, modified_date
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (new_id, self.current_lifelist, species, tier, date, location, notes,
-                         latitude, longitude, json.dumps(custom_data), now, now)
-                    )
-                    current_obs_id = new_id
-                else:
-                    # Update existing observation
-                    cursor.execute(
-                        """UPDATE observations SET 
-                            species = ?, tier = ?, observation_date = ?, location = ?, notes = ?,
-                            latitude = ?, longitude = ?, custom_data = ?, modified_date = ?
-                        WHERE id = ?""",
-                        (species, tier, date, location, notes, latitude, longitude,
-                         json.dumps(custom_data), now, observation_id)
-                    )
-                    current_obs_id = observation_id
-
-                # Handle new tags
-                for tag_name in new_tags:
-                    tag_id = str(uuid.uuid4())
-                    cursor.execute("INSERT INTO tags (id, name) VALUES (?, ?)", (tag_id, tag_name))
-                    cursor.execute("INSERT INTO observation_tags (observation_id, tag_id) VALUES (?, ?)",
-                                   (current_obs_id, tag_id))
-
-                # Handle existing tags
-                if observation_id:
-                    # Remove all existing tag relationships
-                    cursor.execute("DELETE FROM observation_tags WHERE observation_id = ?", (observation_id,))
-
-                # Add selected tags
-                for tag_id, var in tag_vars.items():
-                    if var.get():
-                        cursor.execute("INSERT INTO observation_tags (observation_id, tag_id) VALUES (?, ?)",
-                                       (current_obs_id, tag_id))
-
-                # Handle photo deletions
-                for photo in photos_data:
-                    if len(photo) > 4 and photo[4]:  # Marked for deletion
-                        cursor.execute("DELETE FROM photos WHERE id = ?", (photo[0],))
-                        # Delete the file if possible
-                        try:
-                            os.remove(photo[1])
-                        except:
-                            pass
-
-                # Update thumbnail status for existing photos
-                for photo in photos_data:
-                    if len(photo) <= 4:  # Not marked for deletion
-                        cursor.execute("UPDATE photos SET is_thumbnail = ? WHERE id = ?",
-                                       (1 if photo[3] else 0, photo[0]))
-
-                # Set thumbnail_photo field in observations
-                thumbnail_id = None
-
-                # Check existing photos first
-                for photo in photos_data:
-                    if len(photo) <= 4 and photo[3]:  # Not deleted and is thumbnail
-                        thumbnail_id = photo[0]
-
-                # Process new photos
-                thumbnail_from_new = None
-                for photo_path, filename, description, is_thumbnail in new_photos:
-                    photo_id = str(uuid.uuid4())
-
-                    # Copy the photo to the application's photo directory
-                    dest_filename = f"{photo_id}_{filename}"
-                    dest_path = os.path.join(self.photo_dir, dest_filename)
-                    shutil.copy2(photo_path, dest_path)
-
-                    # Extract EXIF data if possible
-                    lat, lon = self.extract_gps_from_image(photo_path)
-
-                    cursor.execute(
-                        """INSERT INTO photos (
-                            id, observation_id, filename, description, latitude, longitude, 
-                            is_thumbnail, upload_date
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (photo_id, current_obs_id, dest_path, description, lat, lon,
-                         1 if is_thumbnail else 0, now)
-                    )
-
-                    if is_thumbnail:
-                        thumbnail_from_new = photo_id
-
-                # Set the thumbnail in the observation record
-                final_thumbnail = thumbnail_from_new or thumbnail_id
-                if final_thumbnail:
-                    cursor.execute("UPDATE observations SET thumbnail_photo = ? WHERE id = ?",
-                                   (final_thumbnail, current_obs_id))
-
-                conn.commit()
-
-                # Refresh the UI
-                self.load_observations()
-                if self.current_observation == current_obs_id:
-                    self.load_observation_details()
-
-                dialog.destroy()
-
-            except sqlite3.Error as e:
-                conn.rollback()
-                messagebox.showerror("Database Error", str(e))
-            finally:
-                conn.close()
-
-        buttons_frame = ttk.Frame(dialog)
-        buttons_frame.pack(pady=20)
-
-        ttk.Button(buttons_frame, text="Save", command=save_observation).pack(side=tk.LEFT, padx=10)
-        ttk.Button(buttons_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=10)
-
-    def extract_gps_from_image(self, image_path):
-        """Extract GPS coordinates from image EXIF data if available"""
-        try:
-            with Image.open(image_path) as img:
-                exif_data = img._getexif()
-                if not exif_data:
-                    return None, None
-
-                # Extract GPS info
-                gps_info = {}
-                for tag, value in exif_data.items():
-                    tag_name = TAGS.get(tag, tag)
-                    if tag_name == "GPSInfo":
-                        for gps_tag in value:
-                            gps_info[GPSTAGS.get(gps_tag, gps_tag)] = value[gps_tag]
-
-                if not gps_info:
-                    return None, None
-
-                # Convert GPS coordinates to decimal degrees
-                if "GPSLatitude" in gps_info and "GPSLongitude" in gps_info:
-                    lat = self._convert_to_degrees(gps_info["GPSLatitude"])
-                    if gps_info["GPSLatitudeRef"] == "S":
-                        lat = -lat
-
-                    lon = self._convert_to_degrees(gps_info["GPSLongitude"])
-                    if gps_info["GPSLongitudeRef"] == "W":
-                        lon = -lon
-
-                    return lat, lon
-        except:
-            pass
-
-        return None, None
-
-    def _convert_to_degrees(self, value):
-        """Helper function to convert GPS coordinates to decimal degrees"""
-        d, m, s = value
-        return d + (m / 60.0) + (s / 3600.0)
-
-    def load_observation_details(self):
-        """Load and display details for the selected observation"""
-        self.clear_observation_details()
-
-        if not self.current_observation:
-            return
-
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-
-        # Get observation data
-        cursor.execute("""
-            SELECT o.*, l.name as lifelist_name, l.custom_fields
-            FROM observations o
-            JOIN lifelists l ON o.lifelist_id = l.id
-            WHERE o.id = ?
-        """, (self.current_observation,))
-
-        obs = cursor.fetchone()
-        if not obs:
-            conn.close()
-            return
-
-        # Get photos
-        cursor.execute(
-            "SELECT id, filename, description, is_thumbnail FROM photos WHERE observation_id = ? ORDER BY is_thumbnail DESC",
-            (self.current_observation,))
-        photos = cursor.fetchall()
-
-        # Get tags
-        cursor.execute("""
-            SELECT t.name 
-            FROM tags t
-            JOIN observation_tags ot ON t.id = ot.tag_id
-            WHERE ot.observation_id = ?
-            ORDER BY t.name
-        """, (self.current_observation,))
-
-        tags = [tag[0] for tag in cursor.fetchall()]
-        conn.close()
-
-        # Create scrollable canvas for details
-        canvas = tk.Canvas(self.details_frame)
-        scrollbar = ttk.Scrollbar(self.details_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            checkbox.pack(anchor="w", pady=2)
+
+        # Apply button
+        def apply_tag_filter():
+            selected = [tag_id for tag_id, var in tag_vars.items() if var.get()]
+            self.selected_tag_ids = selected
+            self.load_observations()
+            dialog.destroy()
+
+        apply_btn = ctk.CTkButton(
+            dialog,
+            text="Apply",
+            command=apply_tag_filter
         )
+        apply_btn.pack(pady=10)
 
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+    def show_observation_form(self, observation_id=None):
+        self.current_observation_id = observation_id
+
+        # Clear the content area
+        for widget in self.content.winfo_children():
+            widget.destroy()
+
+        # Create the form container
+        form_container = ctk.CTkFrame(self.content)
+        form_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Create scroll canvas
+        canvas = tk.Canvas(form_container, bg="#2b2b2b", highlightthickness=0)
+        scrollbar = ctk.CTkScrollbar(form_container, orientation="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Display observation details
-        row = 0
+        form_frame = ctk.CTkFrame(canvas)
+        canvas.create_window((0, 0), window=form_frame, anchor="nw")
 
-        # Species and tier header
-        species_frame = ttk.Frame(scrollable_frame)
-        species_frame.grid(row=row, column=0, sticky="w", padx=10, pady=5)
-        row += 1
+        form_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig("win", width=e.width))
 
-        ttk.Label(species_frame, text=obs[2], font=("", 14, "bold")).pack(side=tk.LEFT)
-        ttk.Label(species_frame, text=f" ({obs[3]})", font=("", 12, "italic")).pack(side=tk.LEFT)
-
-        # Lifelist name
-        ttk.Label(scrollable_frame, text=f"Lifelist: {obs[11]}", font=("", 10)).grid(
-            row=row, column=0, sticky="w", padx=10, pady=2
+        # Form title
+        title_text = "Edit Observation" if observation_id else "Add New Observation"
+        title_label = ctk.CTkLabel(
+            form_frame,
+            text=title_text,
+            font=ctk.CTkFont(size=20, weight="bold")
         )
-        row += 1
+        title_label.pack(pady=10)
 
-        # Date and location
-        if obs[4]:
-            ttk.Label(scrollable_frame, text=f"Date: {obs[4]}", font=("", 10)).grid(
-                row=row, column=0, sticky="w", padx=10, pady=2
-            )
-            row += 1
+        # Form fields
+        form_fields_frame = ctk.CTkFrame(form_frame)
+        form_fields_frame.pack(fill=tk.X, padx=20, pady=10)
 
-        if obs[5]:
-            ttk.Label(scrollable_frame, text=f"Location: {obs[5]}", font=("", 10)).grid(
-                row=row, column=0, sticky="w", padx=10, pady=2
-            )
-            row += 1
+        # Species field
+        species_frame = ctk.CTkFrame(form_fields_frame)
+        species_frame.pack(fill=tk.X, pady=5)
 
-        # Coordinates
-        if obs[7] and obs[8]:
-            ttk.Label(scrollable_frame, text=f"Coordinates: {obs[7]}, {obs[8]}", font=("", 10)).grid(
-                row=row, column=0, sticky="w", padx=10, pady=2
-            )
-            row += 1
+        ctk.CTkLabel(species_frame, text="Species Name:", width=150).pack(side=tk.LEFT, padx=5)
+        species_entry = ctk.CTkEntry(species_frame, width=300)
+        species_entry.pack(side=tk.LEFT, padx=5)
 
-        # Notes
-        if obs[6]:
-            ttk.Label(scrollable_frame, text="Notes:", font=("", 10, "bold")).grid(
-                row=row, column=0, sticky="w", padx=10, pady=(10, 2)
-            )
-            row += 1
+        # Date field
+        date_frame = ctk.CTkFrame(form_fields_frame)
+        date_frame.pack(fill=tk.X, pady=5)
 
-            notes_text = tk.Text(scrollable_frame, width=40, height=4, wrap=tk.WORD)
-            notes_text.grid(row=row, column=0, sticky="ew", padx=10, pady=2)
-            notes_text.insert("1.0", obs[6])
-            notes_text.config(state=tk.DISABLED)
-            row += 1
+        ctk.CTkLabel(date_frame, text="Observation Date:", width=150).pack(side=tk.LEFT, padx=5)
+        date_entry = ctk.CTkEntry(date_frame, width=300, placeholder_text="YYYY-MM-DD")
+        date_entry.pack(side=tk.LEFT, padx=5)
+
+        # Location field
+        location_frame = ctk.CTkFrame(form_fields_frame)
+        location_frame.pack(fill=tk.X, pady=5)
+
+        ctk.CTkLabel(location_frame, text="Location:", width=150).pack(side=tk.LEFT, padx=5)
+        location_entry = ctk.CTkEntry(location_frame, width=300)
+        location_entry.pack(side=tk.LEFT, padx=5)
+
+        # Coordinates fields
+        coords_frame = ctk.CTkFrame(form_fields_frame)
+        coords_frame.pack(fill=tk.X, pady=5)
+
+        ctk.CTkLabel(coords_frame, text="Coordinates:", width=150).pack(side=tk.LEFT, padx=5)
+
+        lat_entry = ctk.CTkEntry(coords_frame, width=145, placeholder_text="Latitude")
+        lat_entry.pack(side=tk.LEFT, padx=5)
+
+        lon_entry = ctk.CTkEntry(coords_frame, width=145, placeholder_text="Longitude")
+        lon_entry.pack(side=tk.LEFT, padx=5)
+
+        # Tier field
+        tier_frame = ctk.CTkFrame(form_fields_frame)
+        tier_frame.pack(fill=tk.X, pady=5)
+
+        ctk.CTkLabel(tier_frame, text="Tier:", width=150).pack(side=tk.LEFT, padx=5)
+
+        tier_var = tk.StringVar(value="wild")
+        tier_options = ["wild", "captive", "assisted", "dead", "evidence"]
+
+        tier_dropdown = ctk.CTkComboBox(tier_frame, values=tier_options, variable=tier_var, width=300)
+        tier_dropdown.pack(side=tk.LEFT, padx=5)
+
+        # Notes field
+        notes_frame = ctk.CTkFrame(form_fields_frame)
+        notes_frame.pack(fill=tk.X, pady=5)
+
+        ctk.CTkLabel(notes_frame, text="Notes:", width=150).pack(side=tk.LEFT, padx=5, anchor="n")
+        notes_text = ctk.CTkTextbox(notes_frame, width=300, height=100)
+        notes_text.pack(side=tk.LEFT, padx=5)
 
         # Custom fields
-        custom_fields = json.loads(obs[12]) if obs[12] else []
-        custom_data = json.loads(obs[9]) if obs[9] else {}
+        custom_fields_label = ctk.CTkLabel(
+            form_frame,
+            text="Custom Fields",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        custom_fields_label.pack(pady=(20, 5))
 
-        if custom_fields and custom_data:
-            ttk.Label(scrollable_frame, text="Custom Fields:", font=("", 10, "bold")).grid(
-                row=row, column=0, sticky="w", padx=10, pady=(10, 2)
+        custom_fields_frame = ctk.CTkFrame(form_frame)
+        custom_fields_frame.pack(fill=tk.X, padx=20, pady=5)
+
+        # Get custom fields for this lifelist
+        custom_fields = self.db.get_custom_fields(self.current_lifelist_id)
+        custom_field_entries = {}
+
+        if custom_fields:
+            for field_id, field_name, field_type in custom_fields:
+                field_frame = ctk.CTkFrame(custom_fields_frame)
+                field_frame.pack(fill=tk.X, pady=5)
+
+                ctk.CTkLabel(field_frame, text=f"{field_name}:", width=150).pack(side=tk.LEFT, padx=5)
+
+                if field_type == "text":
+                    field_entry = ctk.CTkEntry(field_frame, width=300)
+                elif field_type == "number":
+                    field_entry = ctk.CTkEntry(field_frame, width=300)
+                elif field_type == "date":
+                    field_entry = ctk.CTkEntry(field_frame, width=300, placeholder_text="YYYY-MM-DD")
+                elif field_type == "boolean":
+                    field_entry = ctk.CTkCheckBox(field_frame, text="")
+                else:
+                    field_entry = ctk.CTkEntry(field_frame, width=300)
+
+                field_entry.pack(side=tk.LEFT, padx=5)
+                custom_field_entries[field_id] = field_entry
+        else:
+            no_fields_label = ctk.CTkLabel(
+                custom_fields_frame,
+                text="No custom fields defined for this lifelist"
             )
-            row += 1
+            no_fields_label.pack(pady=10)
 
-            for field in custom_fields:
-                if field in custom_data and custom_data[field]:
-                    ttk.Label(scrollable_frame, text=f"{field}: {custom_data[field]}", font=("", 10)).grid(
-                        row=row, column=0, sticky="w", padx=20, pady=2
+        # Tags section
+        tags_label = ctk.CTkLabel(
+            form_frame,
+            text="Tags",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        tags_label.pack(pady=(20, 5))
+
+        tags_frame = ctk.CTkFrame(form_frame)
+        tags_frame.pack(fill=tk.X, padx=20, pady=5)
+
+        # Tag entry and add button
+        tag_entry_frame = ctk.CTkFrame(tags_frame)
+        tag_entry_frame.pack(fill=tk.X, pady=5)
+
+        ctk.CTkLabel(tag_entry_frame, text="Add Tag:", width=150).pack(side=tk.LEFT, padx=5)
+        tag_entry = ctk.CTkEntry(tag_entry_frame, width=200)
+        tag_entry.pack(side=tk.LEFT, padx=5)
+
+        # List to store the current tags
+        current_tags = []
+        tag_labels_frame = ctk.CTkFrame(tags_frame)
+        tag_labels_frame.pack(fill=tk.X, pady=5)
+
+        def add_tag():
+            tag_name = tag_entry.get().strip()
+            if tag_name and tag_name not in current_tags:
+                current_tags.append(tag_name)
+                tag_entry.delete(0, tk.END)
+                update_tag_display()
+
+        def remove_tag(tag_name):
+            current_tags.remove(tag_name)
+            update_tag_display()
+
+        def update_tag_display():
+            # Clear existing tags
+            for widget in tag_labels_frame.winfo_children():
+                widget.destroy()
+
+            # Add tag labels
+            for tag_name in current_tags:
+                tag_label_frame = ctk.CTkFrame(tag_labels_frame)
+                tag_label_frame.pack(side=tk.LEFT, padx=2, pady=2)
+
+                tag_label = ctk.CTkLabel(tag_label_frame, text=tag_name, padx=5)
+                tag_label.pack(side=tk.LEFT)
+
+                remove_btn = ctk.CTkButton(
+                    tag_label_frame,
+                    text="✕",
+                    width=20,
+                    height=20,
+                    command=lambda t=tag_name: remove_tag(t)
+                )
+                remove_btn.pack(side=tk.LEFT)
+
+        add_tag_btn = ctk.CTkButton(
+            tag_entry_frame,
+            text="Add",
+            width=80,
+            command=add_tag
+        )
+        add_tag_btn.pack(side=tk.LEFT, padx=5)
+
+        # Photos section
+        photos_label = ctk.CTkLabel(
+            form_frame,
+            text="Photos",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        photos_label.pack(pady=(20, 5))
+
+        photos_frame = ctk.CTkFrame(form_frame)
+        photos_frame.pack(fill=tk.X, padx=20, pady=5)
+
+        # List to store photos
+        photos = []
+
+        def add_photos():
+            filetypes = [
+                ("Image files", "*.jpg *.jpeg *.png *.gif *.bmp *.tif *.tiff")
+            ]
+            file_paths = filedialog.askopenfilenames(
+                title="Select Photos",
+                filetypes=filetypes
+            )
+
+            if file_paths:
+                for path in file_paths:
+                    # Ensure the path is not already in the list
+                    if not any(p["path"] == path for p in photos):
+                        # Extract EXIF data if available
+                        lat, lon, taken_date = PhotoUtils.extract_exif_data(path)
+
+                        # Create thumbnail
+                        thumbnail = PhotoUtils.resize_image_for_thumbnail(path)
+
+                        # Add to photos list
+                        photos.append({
+                            "path": path,
+                            "is_primary": len(photos) == 0,  # First photo is primary by default
+                            "thumbnail": thumbnail,
+                            "latitude": lat,
+                            "longitude": lon,
+                            "taken_date": taken_date
+                        })
+
+                update_photos_display()
+
+        def set_primary_photo(index):
+            for i in range(len(photos)):
+                photos[i]["is_primary"] = (i == index)
+            update_photos_display()
+
+        def remove_photo(index):
+            photos.pop(index)
+            # If we removed the primary photo, set a new one
+            if not any(p["is_primary"] for p in photos) and photos:
+                photos[0]["is_primary"] = True
+            update_photos_display()
+
+        def update_photos_display():
+            # Clear existing photos
+            for widget in photos_display_frame.winfo_children():
+                widget.destroy()
+
+            # Add photo thumbnails
+            for i, photo in enumerate(photos):
+                photo_frame = ctk.CTkFrame(photos_display_frame)
+                photo_frame.pack(side=tk.LEFT, padx=5, pady=5)
+
+                if photo["thumbnail"]:
+                    thumbnail_label = ctk.CTkLabel(photo_frame, text="", image=photo["thumbnail"])
+                    thumbnail_label.pack(padx=5, pady=5)
+                    thumbnail_label.image = photo["thumbnail"]  # Keep a reference
+                else:
+                    thumbnail_label = ctk.CTkLabel(photo_frame, text="No Thumbnail")
+                    thumbnail_label.pack(padx=5, pady=5)
+
+                # Primary photo indicator/setter
+                primary_var = tk.BooleanVar(value=photo["is_primary"])
+                primary_check = ctk.CTkCheckBox(
+                    photo_frame,
+                    text="Primary",
+                    variable=primary_var,
+                    command=lambda idx=i: set_primary_photo(idx)
+                )
+                primary_check.pack(padx=5, pady=2)
+
+                # Remove button
+                remove_btn = ctk.CTkButton(
+                    photo_frame,
+                    text="Remove",
+                    width=80,
+                    fg_color="red3",
+                    hover_color="red4",
+                    command=lambda idx=i: remove_photo(idx)
+                )
+                remove_btn.pack(padx=5, pady=2)
+
+        # Add photos button
+        add_photos_btn = ctk.CTkButton(
+            photos_frame,
+            text="Add Photos",
+            command=add_photos
+        )
+        add_photos_btn.pack(pady=10)
+
+        # Photos display area
+        photos_display_frame = ctk.CTkFrame(photos_frame)
+        photos_display_frame.pack(fill=tk.X, pady=5)
+
+        # Buttons frame
+        buttons_frame = ctk.CTkFrame(form_frame)
+        buttons_frame.pack(fill=tk.X, padx=20, pady=20)
+
+        cancel_btn = ctk.CTkButton(
+            buttons_frame,
+            text="Cancel",
+            fg_color="gray40",
+            hover_color="gray30",
+            command=lambda: self.open_lifelist(self.current_lifelist_id, self.get_lifelist_name())
+        )
+        cancel_btn.pack(side=tk.LEFT, padx=5)
+
+        # If editing an existing observation, add a delete button
+        if observation_id:
+            delete_btn = ctk.CTkButton(
+                buttons_frame,
+                text="Delete Observation",
+                fg_color="red3",
+                hover_color="red4",
+                command=self.delete_current_observation
+            )
+            delete_btn.pack(side=tk.LEFT, padx=5)
+
+        # Helper function to validate form fields
+        def validate_fields():
+            species = species_entry.get().strip()
+            if not species:
+                messagebox.showerror("Error", "Species name is required")
+                return False
+            return True
+
+        # Save function
+        def save_observation():
+            if not validate_fields():
+                return
+
+            # Get basic fields
+            species = species_entry.get().strip()
+            observation_date = date_entry.get().strip() or None
+            location = location_entry.get().strip() or None
+            latitude = lat_entry.get().strip() or None
+            longitude = lon_entry.get().strip() or None
+            tier = tier_var.get()
+            notes = notes_text.get("1.0", tk.END).strip() or None
+
+            # Convert latitude/longitude to float if not None
+            if latitude:
+                try:
+                    latitude = float(latitude)
+                except ValueError:
+                    messagebox.showerror("Error", "Latitude must be a number")
+                    return
+
+            if longitude:
+                try:
+                    longitude = float(longitude)
+                except ValueError:
+                    messagebox.showerror("Error", "Longitude must be a number")
+                    return
+
+            try:
+                if observation_id:
+                    # Update existing observation
+                    success = self.db.update_observation(
+                        observation_id,
+                        species,
+                        observation_date,
+                        location,
+                        latitude,
+                        longitude,
+                        tier,
+                        notes
                     )
-                    row += 1
+
+                    if not success:
+                        messagebox.showerror("Error", "Failed to update observation")
+                        return
+
+                    obs_id = observation_id
+                else:
+                    # Create new observation
+                    obs_id = self.db.add_observation(
+                        self.current_lifelist_id,
+                        species,
+                        observation_date,
+                        location,
+                        latitude,
+                        longitude,
+                        tier,
+                        notes
+                    )
+
+                    if not obs_id:
+                        messagebox.showerror("Error", "Failed to add observation")
+                        return
+
+                # Save custom field values
+                for field_id, field_entry in custom_field_entries.items():
+                    if isinstance(field_entry, ctk.CTkCheckBox):
+                        value = "1" if field_entry.get() else "0"
+                    else:
+                        value = field_entry.get().strip()
+
+                    # Delete any existing values
+                    self.db.cursor.execute(
+                        "DELETE FROM observation_custom_fields WHERE observation_id = ? AND field_id = ?",
+                        (obs_id, field_id)
+                    )
+
+                    # Insert new value
+                    if value:
+                        self.db.cursor.execute(
+                            "INSERT INTO observation_custom_fields (observation_id, field_id, value) VALUES (?, ?, ?)",
+                            (obs_id, field_id, value)
+                        )
+
+                # Save tags
+                # First, remove all existing tags for this observation
+                self.db.cursor.execute(
+                    "DELETE FROM observation_tags WHERE observation_id = ?",
+                    (obs_id,)
+                )
+
+                # Add the current tags
+                for tag_name in current_tags:
+                    tag_id = self.db.add_tag(tag_name)
+                    self.db.add_tag_to_observation(obs_id, tag_id)
+
+                # Save photos
+                for photo in photos:
+                    # Check if this is a new photo or an existing one
+                    if "id" not in photo:
+                        # New photo
+                        self.db.add_photo(
+                            obs_id,
+                            photo["path"],
+                            1 if photo["is_primary"] else 0,
+                            photo.get("latitude"),
+                            photo.get("longitude"),
+                            photo.get("taken_date")
+                        )
+
+                self.db.conn.commit()
+
+                # Reload the lifelist view
+                self.open_lifelist(self.current_lifelist_id, self.get_lifelist_name())
+
+            except Exception as e:
+                messagebox.showerror("Error", f"An error occurred: {str(e)}")
+
+        save_btn = ctk.CTkButton(
+            buttons_frame,
+            text="Save",
+            command=save_observation
+        )
+        save_btn.pack(side=tk.RIGHT, padx=5)
+
+        # If editing an existing observation, load its data
+        if observation_id:
+            observation, custom_field_values, obs_tags = self.db.get_observation_details(observation_id)
+
+            if observation:
+                species_entry.insert(0, observation[2] or "")  # species_name
+                if observation[3]:  # observation_date
+                    date_entry.insert(0, observation[3])
+                if observation[4]:  # location
+                    location_entry.insert(0, observation[4])
+                if observation[5]:  # latitude
+                    lat_entry.insert(0, str(observation[5]))
+                if observation[6]:  # longitude
+                    lon_entry.insert(0, str(observation[6]))
+                if observation[7]:  # tier
+                    tier_var.set(observation[7])
+                if observation[8]:  # notes
+                    notes_text.insert("1.0", observation[8])
+
+            # Load custom field values
+            if custom_field_values:
+                for field_name, field_type, value in custom_field_values:
+                    for field_id, entry in custom_field_entries.items():
+                        if self.db.cursor.execute(
+                                "SELECT field_name FROM custom_fields WHERE id = ?",
+                                (field_id,)
+                        ).fetchone()[0] == field_name:
+                            if field_type == "boolean":
+                                entry.select() if value == "1" else entry.deselect()
+                            else:
+                                entry.insert(0, value or "")
+
+            # Load tags
+            if obs_tags:
+                for tag_id, tag_name in obs_tags:
+                    current_tags.append(tag_name)
+                update_tag_display()
+
+            # Load photos
+            obs_photos = self.db.get_photos(observation_id)
+            for photo in obs_photos:
+                photo_id, file_path, is_primary, lat, lon, taken_date = photo
+
+                # Create thumbnail
+                thumbnail = PhotoUtils.resize_image_for_thumbnail(file_path)
+
+                # Add to photos list
+                photos.append({
+                    "id": photo_id,
+                    "path": file_path,
+                    "is_primary": bool(is_primary),
+                    "thumbnail": thumbnail,
+                    "latitude": lat,
+                    "longitude": lon,
+                    "taken_date": taken_date
+                })
+
+            update_photos_display()
+
+    def view_observation(self, observation_id):
+        self.current_observation_id = observation_id
+
+        # Clear the content area
+        for widget in self.content.winfo_children():
+            widget.destroy()
+
+        # Create the detail container
+        detail_container = ctk.CTkFrame(self.content)
+        detail_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Create scroll canvas
+        canvas = tk.Canvas(detail_container, bg="#2b2b2b", highlightthickness=0)
+        scrollbar = ctk.CTkScrollbar(detail_container, orientation="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        detail_frame = ctk.CTkFrame(canvas)
+        canvas.create_window((0, 0), window=detail_frame, anchor="nw")
+
+        detail_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig("win", width=e.width))
+
+        # Load observation details
+        observation, custom_fields, tags = self.db.get_observation_details(observation_id)
+
+        if not observation:
+            error_label = ctk.CTkLabel(
+                detail_frame,
+                text="Observation not found",
+                font=ctk.CTkFont(size=16)
+            )
+            error_label.pack(pady=20)
+
+            back_btn = ctk.CTkButton(
+                detail_frame,
+                text="Back to Lifelist",
+                command=lambda: self.open_lifelist(self.current_lifelist_id, self.get_lifelist_name())
+            )
+            back_btn.pack(pady=10)
+            return
+
+        # Photos carousel at the top
+        photos = self.db.get_photos(observation_id)
+
+        if photos:
+            photos_frame = ctk.CTkFrame(detail_frame)
+            photos_frame.pack(fill=tk.X, padx=20, pady=10)
+
+            # Show primary photo larger, with small thumbnails below
+            primary_photo = None
+            for photo in photos:
+                if photo[2]:  # is_primary
+                    primary_photo = photo
+                    break
+
+            if not primary_photo and photos:
+                primary_photo = photos[0]
+
+            if primary_photo:
+                try:
+                    img = Image.open(primary_photo[1])
+                    img.thumbnail((600, 400))  # Resize while maintaining aspect ratio
+                    photo_img = ImageTk.PhotoImage(img)
+
+                    photo_label = ctk.CTkLabel(photos_frame, text="", image=photo_img)
+                    photo_label.pack(pady=10)
+                    photo_label.image = photo_img  # Keep a reference
+                except Exception as e:
+                    print(f"Error loading primary photo: {e}")
+
+            # Thumbnails row
+            thumbnails_frame = ctk.CTkFrame(photos_frame)
+            thumbnails_frame.pack(fill=tk.X, pady=10)
+
+            for photo in photos:
+                try:
+                    thumbnail = PhotoUtils.resize_image_for_thumbnail(photo[1], size=(80, 80))
+                    if thumbnail:
+                        thumb_frame = ctk.CTkFrame(thumbnails_frame)
+                        thumb_frame.pack(side=tk.LEFT, padx=5)
+
+                        thumb_label = ctk.CTkLabel(thumb_frame, text="", image=thumbnail)
+                        thumb_label.pack(padx=5, pady=5)
+                        thumb_label.image = thumbnail  # Keep a reference
+
+                        # Add a primary indicator if this is the primary photo
+                        if photo[2]:  # is_primary
+                            primary_label = ctk.CTkLabel(thumb_frame, text="Primary", font=ctk.CTkFont(size=10))
+                            primary_label.pack(pady=2)
+                except Exception as e:
+                    print(f"Error creating thumbnail: {e}")
+
+        # Header with species name
+        species_name = observation[2]
+        title_label = ctk.CTkLabel(
+            detail_frame,
+            text=species_name,
+            font=ctk.CTkFont(size=24, weight="bold")
+        )
+        title_label.pack(pady=15)
+
+        # Details section
+        details_frame = ctk.CTkFrame(detail_frame)
+        details_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        # Observation details
+        details_grid = ctk.CTkFrame(details_frame)
+        details_grid.pack(fill=tk.X, pady=10)
+
+        # Date
+        date_frame = ctk.CTkFrame(details_grid)
+        date_frame.pack(fill=tk.X, pady=2)
+
+        ctk.CTkLabel(date_frame, text="Date:", width=150, font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(date_frame, text=observation[3] or "Not recorded").pack(side=tk.LEFT, padx=5)
+
+        # Location
+        location_frame = ctk.CTkFrame(details_grid)
+        location_frame.pack(fill=tk.X, pady=2)
+
+        ctk.CTkLabel(location_frame, text="Location:", width=150, font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT,
+                                                                                                        padx=5)
+        ctk.CTkLabel(location_frame, text=observation[4] or "Not recorded").pack(side=tk.LEFT, padx=5)
+
+        # Coordinates
+        if observation[5] and observation[6]:  # latitude and longitude
+            coords_frame = ctk.CTkFrame(details_grid)
+            coords_frame.pack(fill=tk.X, pady=2)
+
+            ctk.CTkLabel(coords_frame, text="Coordinates:", width=150, font=ctk.CTkFont(weight="bold")).pack(
+                side=tk.LEFT, padx=5)
+            coord_text = f"{observation[5]}, {observation[6]}"
+            ctk.CTkLabel(coords_frame, text=coord_text).pack(side=tk.LEFT, padx=5)
+
+        # Tier
+        tier_frame = ctk.CTkFrame(details_grid)
+        tier_frame.pack(fill=tk.X, pady=2)
+
+        ctk.CTkLabel(tier_frame, text="Tier:", width=150, font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(tier_frame, text=observation[7] or "Not specified").pack(side=tk.LEFT, padx=5)
+
+        # Notes (if any)
+        if observation[8]:
+            notes_frame = ctk.CTkFrame(details_grid)
+            notes_frame.pack(fill=tk.X, pady=5)
+
+            ctk.CTkLabel(notes_frame, text="Notes:", width=150, font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT,
+                                                                                                      padx=5,
+                                                                                                      anchor="n")
+
+            notes_text = ctk.CTkTextbox(notes_frame, width=400, height=100)
+            notes_text.pack(side=tk.LEFT, padx=5, pady=5)
+            notes_text.insert("1.0", observation[8])
+            notes_text.configure(state="disabled")  # Make it read-only
+
+        # Custom fields
+        if custom_fields:
+            custom_fields_label = ctk.CTkLabel(
+                detail_frame,
+                text="Custom Fields",
+                font=ctk.CTkFont(size=16, weight="bold")
+            )
+            custom_fields_label.pack(pady=(20, 5))
+
+            custom_fields_frame = ctk.CTkFrame(detail_frame)
+            custom_fields_frame.pack(fill=tk.X, padx=20, pady=5)
+
+            for field_name, field_type, value in custom_fields:
+                field_frame = ctk.CTkFrame(custom_fields_frame)
+                field_frame.pack(fill=tk.X, pady=2)
+
+                ctk.CTkLabel(field_frame, text=f"{field_name}:", width=150, font=ctk.CTkFont(weight="bold")).pack(
+                    side=tk.LEFT, padx=5)
+
+                # Format the value based on field type
+                if field_type == "boolean":
+                    display_value = "Yes" if value == "1" else "No"
+                else:
+                    display_value = value or "Not specified"
+
+                ctk.CTkLabel(field_frame, text=display_value).pack(side=tk.LEFT, padx=5)
 
         # Tags
         if tags:
-            ttk.Label(scrollable_frame, text="Tags:", font=("", 10, "bold")).grid(
-                row=row, column=0, sticky="w", padx=10, pady=(10, 2)
+            tags_label = ctk.CTkLabel(
+                detail_frame,
+                text="Tags",
+                font=ctk.CTkFont(size=16, weight="bold")
             )
-            row += 1
+            tags_label.pack(pady=(20, 5))
 
-            tags_frame = ttk.Frame(scrollable_frame)
-            tags_frame.grid(row=row, column=0, sticky="w", padx=20, pady=2)
-            row += 1
+            tags_frame = ctk.CTkFrame(detail_frame)
+            tags_frame.pack(fill=tk.X, padx=20, pady=5)
 
-            for i, tag in enumerate(tags):
-                ttk.Label(tags_frame, text=tag, background="#e0e0e0", padding=(5, 2)).grid(
-                    row=0, column=i, padx=5, pady=2
+            for tag_id, tag_name in tags:
+                tag_label = ctk.CTkLabel(
+                    tags_frame,
+                    text=tag_name,
+                    fg_color="gray30",
+                    corner_radius=10,
+                    padx=10,
+                    pady=5
                 )
+                tag_label.pack(side=tk.LEFT, padx=5, pady=5)
 
-        # Photos
-        if photos:
-            ttk.Label(scrollable_frame, text="Photos:", font=("", 10, "bold")).grid(
-                row=row, column=0, sticky="w", padx=10, pady=(10, 2)
-            )
-            row += 1
+        # Action buttons
+        buttons_frame = ctk.CTkFrame(detail_frame)
+        buttons_frame.pack(fill=tk.X, padx=20, pady=20)
 
-            photos_frame = ttk.Frame(scrollable_frame)
-            photos_frame.grid(row=row, column=0, sticky="w", padx=10, pady=2)
-            row += 1
+        back_btn = ctk.CTkButton(
+            buttons_frame,
+            text="Back to Lifelist",
+            command=lambda: self.open_lifelist(self.current_lifelist_id, self.get_lifelist_name())
+        )
+        back_btn.pack(side=tk.LEFT, padx=5)
 
-            # Show the thumbnail first, then up to 3 more photos
-            display_photos = []
-            thumbnail = None
-
-            for photo in photos:
-                if photo[3]:  # Is thumbnail
-                    thumbnail = photo
-                else:
-                    display_photos.append(photo)
-
-            if thumbnail:
-                display_photos.insert(0, thumbnail)
-
-            for i, photo in enumerate(display_photos[:4]):
-                try:
-                    img = Image.open(photo[1])
-                    img = img.resize((150, 150), Image.LANCZOS)
-                    photo_img = ImageTk.PhotoImage(img)
-
-                    photo_label = ttk.Label(photos_frame, image=photo_img)
-                    photo_label.image = photo_img  # Keep a reference
-                    photo_label.grid(row=0, column=i, padx=5, pady=5)
-
-                    if photo[3]:  # Is thumbnail
-                        ttk.Label(photos_frame, text="Primary", font=("", 8)).grid(
-                            row=1, column=i, padx=5
-                        )
-                except:
-                    ttk.Label(photos_frame, text="Image load error").grid(
-                        row=0, column=i, padx=5, pady=5
-                    )
-
-            if len(photos) > 4:
-                ttk.Label(photos_frame, text=f"+ {len(photos) - 4} more").grid(
-                    row=0, column=4, padx=5, pady=5
-                )
-
-    def clear_observation_details(self):
-        """Clear the observation details panel"""
-        for widget in self.details_frame.winfo_children():
-            widget.destroy()
-
-        self.no_selection_label = ttk.Label(self.details_frame, text="Select an observation to view details")
-        self.no_selection_label.pack(fill=tk.BOTH, expand=True)
-
-    def show_obs_context_menu(self, event):
-        """Show the observation context menu on right-click"""
-        if self.observations_treeview.identify_row(event.y):
-            self.observations_treeview.selection_set(self.observations_treeview.identify_row(event.y))
-            self.obs_context_menu.post(event.x_root, event.y_root)
-
-    def delete_observation(self):
-        """Delete the selected observation"""
-        if not self.current_observation:
-            messagebox.showinfo("Information", "Please select an observation first")
-            return
-
-        if not messagebox.askyesno("Confirm", "Are you sure you want to delete this observation?"):
-            return
-
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-
-        # Get photos to delete files
-        cursor.execute("SELECT filename FROM photos WHERE observation_id = ?", (self.current_observation,))
-        photos = cursor.fetchall()
-
-        # Start transaction
-        conn.execute("BEGIN TRANSACTION")
-
-        try:
-            # Delete the observation (cascades to photos and tags relations)
-            cursor.execute("DELETE FROM observations WHERE id = ?", (self.current_observation,))
-            conn.commit()
-
-            # Delete photo files
-            for photo in photos:
-                try:
-                    if os.path.exists(photo[0]):
-                        os.remove(photo[0])
-                except:
-                    pass
-
-            # Refresh UI
-            self.load_observations()
-            self.clear_observation_details()
-
-        except sqlite3.Error as e:
-            conn.rollback()
-            messagebox.showerror("Database Error", str(e))
-        finally:
-            conn.close()
+        edit_btn = ctk.CTkButton(
+            buttons_frame,
+            text="Edit Observation",
+            command=lambda: self.show_observation_form(observation_id)
+        )
+        edit_btn.pack(side=tk.RIGHT, padx=5)
 
     def view_map(self):
-        """View observations on a map"""
-        if not self.current_lifelist:
-            messagebox.showinfo("Information", "Please select a lifelist first")
+        if not self.current_lifelist_id:
             return
 
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-
-        # Get observations with coordinates
-        cursor.execute("""
-            SELECT id, species, tier, latitude, longitude, location
-            FROM observations
-            WHERE lifelist_id = ? AND latitude IS NOT NULL AND longitude IS NOT NULL
-        """, (self.current_lifelist,))
-        observations = cursor.fetchall()
-
-        conn.close()
+        # Get all observations for this lifelist
+        observations = self.db.get_observations(self.current_lifelist_id)
 
         if not observations:
-            messagebox.showinfo("Information", "No observations with location data found")
+            messagebox.showinfo("Map View", "No observations to display on the map")
             return
 
-        # Create a map centered on the average coordinates
-        avg_lat = sum(obs[3] for obs in observations) / len(observations)
-        avg_lon = sum(obs[4] for obs in observations) / len(observations)
+        # Create a temporary file for the map
+        import tempfile
+        map_file = tempfile.NamedTemporaryFile(delete=False, suffix='.html')
+        map_file.close()
 
-        m = folium.Map(location=[avg_lat, avg_lon], zoom_start=10)
+        # Generate the map
+        result = MapGenerator.create_observation_map(observations, self.db, map_file.name)
 
-        # Add markers for each observation
-        for obs in observations:
-            popup_text = f"<b>{obs[1]}</b><br>Tier: {obs[2]}"
-            if obs[5]:
-                popup_text += f"<br>Location: {obs[5]}"
+        if isinstance(result, tuple) and len(result) == 2:
+            map_path, message = result
 
-            folium.Marker(
-                location=[obs[3], obs[4]],
-                popup=popup_text,
-                tooltip=obs[1]
-            ).add_to(m)
+            if map_path:
+                # Map was created successfully
+                messagebox.showinfo("Map Created", message)
+                webbrowser.open('file://' + os.path.realpath(map_path))
+            else:
+                # Map creation failed
+                messagebox.showinfo("Map Creation Failed",
+                                    f"Could not create map: {message}\n\n"
+                                    "To fix this issue:\n"
+                                    "1. Add latitude/longitude data to your observations, or\n"
+                                    "2. Upload photos that contain GPS information in their EXIF data")
+        else:
+            messagebox.showerror("Error", "An unexpected error occurred while creating the map")
 
-        # Save the map to a temporary file and open it in the browser
-        map_path = os.path.join(self.db_path, "observation_map.html")
-        m.save(map_path)
-        webbrowser.open(f"file://{map_path}")
+    def get_lifelist_name(self):
+        if not self.current_lifelist_id:
+            return ""
 
-    def manage_custom_fields(self):
-        """Manage custom fields for the current lifelist"""
-        if not self.current_lifelist:
-            messagebox.showinfo("Information", "Please select a lifelist first")
+        self.db.cursor.execute("SELECT name FROM lifelists WHERE id = ?", (self.current_lifelist_id,))
+        result = self.db.cursor.fetchone()
+
+        if result:
+            return result[0]
+        return ""
+
+    def delete_current_observation(self):
+        if not self.current_observation_id:
             return
 
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute("SELECT custom_fields FROM lifelists WHERE id = ?", (self.current_lifelist,))
-        result = cursor.fetchone()
-        conn.close()
+        confirm = messagebox.askyesno(
+            "Confirm Delete",
+            "Are you sure you want to delete this observation? This action cannot be undone."
+        )
 
-        if not result:
+        if confirm:
+            success, photos = self.db.delete_observation(self.current_observation_id)
+
+            if success:
+                # Return to the lifelist view
+                self.open_lifelist(self.current_lifelist_id, self.get_lifelist_name())
+            else:
+                messagebox.showerror("Error", "Failed to delete the observation")
+
+    def delete_current_lifelist(self):
+        if not self.current_lifelist_id:
             return
 
-        custom_fields = json.loads(result[0])
+        lifelist_name = self.get_lifelist_name()
 
-        # Create dialog
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Manage Custom Fields")
-        dialog.geometry("400x400")
-        dialog.grab_set()
+        confirm = messagebox.askyesno(
+            "Confirm Delete",
+            f"Are you sure you want to delete the lifelist '{lifelist_name}'? This will delete all observations and cannot be undone."
+        )
 
-        ttk.Label(dialog, text="Custom Fields:", font=("", 12, "bold")).pack(padx=10, pady=10)
+        if confirm:
+            # First offer to export
+            export_first = messagebox.askyesno(
+                "Export First?",
+                "Would you like to export this lifelist before deleting it?"
+            )
 
-        # List of current fields
-        fields_frame = ttk.Frame(dialog)
-        fields_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            if export_first:
+                self.export_lifelist()
 
-        fields_listbox = tk.Listbox(fields_frame, width=40, height=10)
-        fields_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            success = self.db.delete_lifelist(self.current_lifelist_id)
 
-        scrollbar = ttk.Scrollbar(fields_frame, orient=tk.VERTICAL, command=fields_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        fields_listbox.config(yscrollcommand=scrollbar.set)
+            if success:
+                messagebox.showinfo("Success", f"Lifelist '{lifelist_name}' has been deleted")
+                self.current_lifelist_id = None
+                self.current_observation_id = None
+                self.setup_sidebar()
 
-        # Populate listbox
-        for field in custom_fields:
-            fields_listbox.insert(tk.END, field)
+                # Show welcome screen
+                for widget in self.content.winfo_children():
+                    widget.destroy()
 
-        # Add field controls
-        add_frame = ttk.Frame(dialog)
-        add_frame.pack(fill=tk.X, padx=10, pady=10)
+                welcome_frame = ctk.CTkFrame(self.content)
+                welcome_frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(add_frame, text="New Field:").pack(side=tk.LEFT, padx=5)
-        new_field_var = tk.StringVar()
-        new_field_entry = ttk.Entry(add_frame, textvariable=new_field_var, width=20)
-        new_field_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-
-        def add_field():
-            field_name = new_field_var.get().strip()
-            if field_name and field_name not in custom_fields:
-                custom_fields.append(field_name)
-                fields_listbox.insert(tk.END, field_name)
-                new_field_var.set("")
-
-        ttk.Button(add_frame, text="Add", command=add_field).pack(side=tk.LEFT, padx=5)
-
-        # Remove field button
-        def remove_field():
-            selected = fields_listbox.curselection()
-            if selected:
-                field_name = fields_listbox.get(selected[0])
-                if messagebox.askyesno("Confirm",
-                                       f"Remove field '{field_name}'? This will remove this field from all observations."):
-                    custom_fields.remove(field_name)
-                    fields_listbox.delete(selected[0])
-
-        ttk.Button(dialog, text="Remove Selected Field", command=remove_field).pack(pady=5)
-
-        # Save button
-        def save_fields():
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-            cursor.execute("UPDATE lifelists SET custom_fields = ? WHERE id = ?",
-                           (json.dumps(custom_fields), self.current_lifelist))
-            conn.commit()
-            conn.close()
-            dialog.destroy()
-
-        buttons_frame = ttk.Frame(dialog)
-        buttons_frame.pack(pady=10)
-
-        ttk.Button(buttons_frame, text="Save", command=save_fields).pack(side=tk.LEFT, padx=10)
-        ttk.Button(buttons_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=10)
-
-    def delete_lifelist(self):
-        """Delete the current lifelist"""
-        if not self.current_lifelist:
-            messagebox.showinfo("Information", "Please select a lifelist first")
-            return
-
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM lifelists WHERE id = ?", (self.current_lifelist,))
-        result = cursor.fetchone()
-        conn.close()
-
-        if not result:
-            return
-
-        lifelist_name = result[0]
-
-        if not messagebox.askyesno("Confirm",
-                                   f"Are you sure you want to delete the lifelist '{lifelist_name}'?\n\nThis will permanently delete all observations, photos, and tags associated with this lifelist."):
-            return
-
-        # Get photos to delete files
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT p.filename
-            FROM photos p
-            JOIN observations o ON p.observation_id = o.id
-            WHERE o.lifelist_id = ?
-        """, (self.current_lifelist,))
-        photos = cursor.fetchall()
-
-        # Start transaction
-        conn.execute("BEGIN TRANSACTION")
-
-        try:
-            # Delete the lifelist (cascades to observations, which cascades to photos and tags relations)
-            cursor.execute("DELETE FROM lifelists WHERE id = ?", (self.current_lifelist,))
-            conn.commit()
-
-            # Delete photo files
-            for photo in photos:
-                try:
-                    if os.path.exists(photo[0]):
-                        os.remove(photo[0])
-                except:
-                    pass
-
-            # Refresh UI
-            self.current_lifelist = None
-            self.load_lifelists()
-            self.clear_observations()
-
-        except sqlite3.Error as e:
-            conn.rollback()
-            messagebox.showerror("Database Error", str(e))
-        finally:
-            conn.close()
+                welcome_label = ctk.CTkLabel(
+                    welcome_frame,
+                    text="Welcome to Lifelist Manager",
+                    font=ctk.CTkFont(size=24, weight="bold")
+                )
+                welcome_label.pack(pady=20)
+            else:
+                messagebox.showerror("Error", f"Failed to delete lifelist '{lifelist_name}'")
 
     def export_lifelist(self):
-        """Export the current lifelist to a JSON file"""
-        if not self.current_lifelist:
-            messagebox.showinfo("Information", "Please select a lifelist first")
+        if not self.current_lifelist_id:
             return
 
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
+        lifelist_name = self.get_lifelist_name()
 
-        # Get lifelist data
-        cursor.execute("SELECT * FROM lifelists WHERE id = ?", (self.current_lifelist,))
-        lifelist = cursor.fetchone()
-
-        if not lifelist:
-            conn.close()
-            return
-
-        # Get observations
-        cursor.execute("SELECT * FROM observations WHERE lifelist_id = ?", (self.current_lifelist,))
-        observations = cursor.fetchall()
-
-        # Prepare export data
-        export_data = {
-            "lifelist": {
-                "id": lifelist[0],
-                "name": lifelist[1],
-                "description": lifelist[2],
-                "taxonomy_source": lifelist[3],
-                "created_date": lifelist[4],
-                "modified_date": lifelist[5],
-                "custom_fields": json.loads(lifelist[6]) if lifelist[6] else []
-            },
-            "observations": []
-        }
-
-        # Process each observation
-        for obs in observations:
-            # Get photos
-            cursor.execute("SELECT * FROM photos WHERE observation_id = ?", (obs[0],))
-            photos = cursor.fetchall()
-
-            # Get tags
-            cursor.execute("""
-                SELECT t.name 
-                FROM tags t
-                JOIN observation_tags ot ON t.id = ot.tag_id
-                WHERE ot.observation_id = ?
-            """, (obs[0],))
-            tags = [tag[0] for tag in cursor.fetchall()]
-
-            # Add to export data
-            export_data["observations"].append({
-                "id": obs[0],
-                "species": obs[2],
-                "tier": obs[3],
-                "observation_date": obs[4],
-                "location": obs[5],
-                "notes": obs[6],
-                "latitude": obs[7],
-                "longitude": obs[8],
-                "custom_data": json.loads(obs[9]) if obs[9] else {},
-                "created_date": obs[10],
-                "modified_date": obs[11],
-                "thumbnail_photo": obs[12],
-                "tags": tags,
-                "photos": [
-                    {
-                        "id": photo[0],
-                        "filename": os.path.basename(photo[2]),
-                        "description": photo[3],
-                        "latitude": photo[4],
-                        "longitude": photo[5],
-                        "is_thumbnail": bool(photo[6]),
-                        "upload_date": photo[7]
-                    } for photo in photos
-                ]
-            })
-
-        conn.close()
-
-        # Ask for save location
-        filepath = filedialog.asksaveasfilename(
-            title="Export Lifelist",
-            defaultextension=".json",
-            filetypes=(("JSON files", "*.json"), ("All files", "*.*"))
+        # Ask for export location
+        export_dir = filedialog.askdirectory(
+            title=f"Select Export Location for '{lifelist_name}'"
         )
 
-        if not filepath:
+        if not export_dir:
             return
 
-        # Save the export data
-        try:
-            with open(filepath, 'w') as f:
-                json.dump(export_data, f, indent=2)
+        # Create a directory for this export
+        export_path = os.path.join(export_dir, re.sub(r'[^\w\s-]', '', lifelist_name).strip().replace(' ', '_'))
+        os.makedirs(export_path, exist_ok=True)
 
-            # Create a zip file for photos if there are any
-            photo_count = sum(len(obs.get("photos", [])) for obs in export_data["observations"])
+        # Ask if photos should be included
+        include_photos = messagebox.askyesno(
+            "Export Photos?",
+            "Would you like to include photos in the export? This may increase the export size significantly."
+        )
 
-            if photo_count > 0 and messagebox.askyesno("Export Photos",
-                                                       f"Export {photo_count} photos along with lifelist data?"):
-                import zipfile
+        # Export the lifelist
+        success = self.db.export_lifelist(self.current_lifelist_id, export_path, include_photos)
 
-                zip_path = filepath.replace(".json", "_photos.zip")
-                with zipfile.ZipFile(zip_path, 'w') as zip_file:
-                    # Add each photo to the zip
-                    for obs in export_data["observations"]:
-                        for photo in obs["photos"]:
-                            # Get the actual photo path in our system
-                            conn = sqlite3.connect(self.db_file)
-                            cursor = conn.cursor()
-                            cursor.execute("SELECT filename FROM photos WHERE id = ?", (photo["id"],))
-                            result = cursor.fetchone()
-                            conn.close()
-
-                            if result and os.path.exists(result[0]):
-                                # Add to zip with a structured path
-                                archive_path = f"{obs['species']}/{photo['filename']}"
-                                zip_file.write(result[0], arcname=archive_path)
-
-                messagebox.showinfo("Export Complete",
-                                    f"Lifelist exported to {filepath}\nPhotos exported to {zip_path}")
-            else:
-                messagebox.showinfo("Export Complete", f"Lifelist exported to {filepath}")
-
-        except Exception as e:
-            messagebox.showerror("Export Error", str(e))
+        if success:
+            messagebox.showinfo(
+                "Export Successful",
+                f"Lifelist '{lifelist_name}' has been exported to:\n{export_path}"
+            )
+        else:
+            messagebox.showerror("Export Error", f"Failed to export lifelist '{lifelist_name}'")
 
     def import_lifelist(self):
-        """Import a lifelist from a JSON file"""
-        filepath = filedialog.askopenfilename(
-            title="Import Lifelist",
-            filetypes=(("JSON files", "*.json"), ("All files", "*.*"))
+        # Ask for JSON file
+        json_file = filedialog.askopenfilename(
+            title="Select Lifelist JSON File",
+            filetypes=[("JSON files", "*.json")]
         )
 
-        if not filepath:
+        if not json_file:
             return
 
-        try:
-            with open(filepath, 'r') as f:
-                import_data = json.load(f)
+        # Check for photos directory
+        photos_dir = None
+        json_dir = os.path.dirname(json_file)
+        potential_photos_dir = os.path.join(json_dir, "photos")
 
-            # Validate basic structure
-            if not isinstance(import_data, dict) or "lifelist" not in import_data or "observations" not in import_data:
-                messagebox.showerror("Import Error", "Invalid lifelist file format")
-                return
+        if os.path.isdir(potential_photos_dir):
+            include_photos = messagebox.askyesno(
+                "Import Photos?",
+                "A 'photos' directory was found. Would you like to include photos in the import?"
+            )
 
-            # Ask about photo import
-            photo_zip_path = None
-            photo_count = sum(len(obs.get("photos", [])) for obs in import_data["observations"])
+            if include_photos:
+                photos_dir = potential_photos_dir
 
-            if photo_count > 0:
-                if messagebox.askyesno("Import Photos",
-                                       f"The lifelist contains {photo_count} photo references. Do you want to import photos from a zip file?"):
-                    photo_zip_path = filedialog.askopenfilename(
-                        title="Select Photos Zip File",
-                        filetypes=(("ZIP files", "*.zip"), ("All files", "*.*"))
-                    )
+        # Import the lifelist
+        success, message = self.db.import_lifelist(json_file, photos_dir)
 
-            # Connect to database
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-
-            # Start transaction
-            conn.execute("BEGIN TRANSACTION")
-
-            try:
-                # Generate a new ID for the lifelist
-                new_lifelist_id = str(uuid.uuid4())
-                lifelist = import_data["lifelist"]
-
-                # Insert lifelist
-                now = datetime.now().isoformat()
-                cursor.execute(
-                    """INSERT INTO lifelists (
-                        id, name, description, taxonomy_source, 
-                        created_date, modified_date, custom_fields
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (new_lifelist_id, lifelist["name"], lifelist.get("description", ""),
-                     lifelist.get("taxonomy_source", ""), now, now,
-                     json.dumps(lifelist.get("custom_fields", [])))
-                )
-
-                # ID mapping for relations
-                id_mapping = {
-                    "observations": {},
-                    "photos": {},
-                    "tags": {}
-                }
-
-                # Import tags first
-                all_tags = {}
-                for obs in import_data["observations"]:
-                    for tag_name in obs.get("tags", []):
-                        if tag_name not in all_tags:
-                            # Check if tag already exists
-                            cursor.execute("SELECT id FROM tags WHERE name = ?", (tag_name,))
-                            result = cursor.fetchone()
-
-                            if result:
-                                all_tags[tag_name] = result[0]
-                            else:
-                                tag_id = str(uuid.uuid4())
-                                cursor.execute("INSERT INTO tags (id, name) VALUES (?, ?)",
-                                               (tag_id, tag_name))
-                                all_tags[tag_name] = tag_id
-
-                # Open zip file if provided
-                zip_file = None
-                if photo_zip_path:
-                    try:
-                        import zipfile
-                        zip_file = zipfile.ZipFile(photo_zip_path, 'r')
-                    except:
-                        messagebox.showwarning("Warning", "Could not open photos zip file. Continuing without photos.")
-
-                # Import observations
-                for obs in import_data["observations"]:
-                    # Generate new ID
-                    new_obs_id = str(uuid.uuid4())
-                    id_mapping["observations"][obs["id"]] = new_obs_id
-
-                    # Insert observation
-                    cursor.execute(
-                        """INSERT INTO observations (
-                            id, lifelist_id, species, tier, observation_date, location, notes, 
-                            latitude, longitude, custom_data, created_date, modified_date
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (new_obs_id, new_lifelist_id, obs["species"], obs["tier"],
-                         obs.get("observation_date", ""), obs.get("location", ""), obs.get("notes", ""),
-                         obs.get("latitude"), obs.get("longitude"),
-                         json.dumps(obs.get("custom_data", {})), now, now)
-                    )
-
-                    # Import tags
-                    for tag_name in obs.get("tags", []):
-                        cursor.execute("INSERT INTO observation_tags (observation_id, tag_id) VALUES (?, ?)",
-                                       (new_obs_id, all_tags[tag_name]))
-
-                    # Import photos
-                    thumbnail_id = None
-
-                    for photo in obs.get("photos", []):
-                        new_photo_id = str(uuid.uuid4())
-                        id_mapping["photos"][photo["id"]] = new_photo_id
-
-                        # Try to extract photo from zip if available
-                        photo_path = None
-
-                        if zip_file:
-                            try:
-                                # Look for the photo in various possible paths
-                                possible_paths = [
-                                    f"{obs['species']}/{photo['filename']}",
-                                    photo['filename']
-                                ]
-
-                                for path in possible_paths:
-                                    try:
-                                        zip_info = zip_file.getinfo(path)
-                                        photo_data = zip_file.read(zip_info)
-
-                                        # Save to photos directory
-                                        dest_filename = f"{new_photo_id}_{photo['filename']}"
-                                        dest_path = os.path.join(self.photo_dir, dest_filename)
-
-                                        with open(dest_path, 'wb') as f:
-                                            f.write(photo_data)
-
-                                        photo_path = dest_path
-                                        break
-                                    except:
-                                        continue
-                            except:
-                                pass
-
-                        # Insert photo record
-                        cursor.execute(
-                            """INSERT INTO photos (
-                                id, observation_id, filename, description, latitude, longitude, 
-                                is_thumbnail, upload_date
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (new_photo_id, new_obs_id, photo_path or "", photo.get("description", ""),
-                             photo.get("latitude"), photo.get("longitude"),
-                             1 if photo.get("is_thumbnail") else 0, now)
-                        )
-
-                        if photo.get("is_thumbnail"):
-                            thumbnail_id = new_photo_id
-
-                    # Update thumbnail reference
-                    if thumbnail_id:
-                        cursor.execute("UPDATE observations SET thumbnail_photo = ? WHERE id = ?",
-                                       (thumbnail_id, new_obs_id))
-
-                # Close zip file if opened
-                if zip_file:
-                    zip_file.close()
-
-                conn.commit()
-
-                # Refresh UI
-                self.load_lifelists()
-
-                messagebox.showinfo("Import Complete",
-                                    f"Lifelist '{lifelist['name']}' imported successfully with {len(import_data['observations'])} observations")
-
-            except Exception as e:
-                conn.rollback()
-                messagebox.showerror("Import Error", str(e))
-            finally:
-                conn.close()
-
-        except Exception as e:
-            messagebox.showerror("Import Error", str(e))
+        if success:
+            messagebox.showinfo("Import Successful", message)
+            # Refresh sidebar
+            self.setup_sidebar()
+        else:
+            messagebox.showerror("Import Error", message)
 
 
 def main():
-    root = tk.Tk()
-    app = LifelistManager(root)
+    root = ctk.CTk()
+    app = LifelistApp(root)
     root.mainloop()
 
 
