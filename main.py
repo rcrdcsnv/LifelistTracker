@@ -1090,23 +1090,73 @@ class LifelistApp:
             no_results.pack(pady=20)
             return
 
-        # Add each observation to the list
+        # Group observations by species
+        species_groups = {}
         for obs in observations:
             obs_id, species_name, obs_date, location, tier = obs
+
+            # If we haven't seen this species yet, create a new entry
+            if species_name not in species_groups:
+                species_groups[species_name] = {
+                    "latest_id": obs_id,
+                    "date": obs_date,
+                    "location": location,
+                    "tier": tier,
+                    "observation_ids": [obs_id]
+                }
+            else:
+                # Add this observation ID to the list
+                species_groups[species_name]["observation_ids"].append(obs_id)
+
+                # Update date if this observation is more recent
+                if not species_groups[species_name]["date"] or (obs_date and (
+                        not species_groups[species_name]["date"] or obs_date > species_groups[species_name]["date"])):
+                    species_groups[species_name]["date"] = obs_date
+                    species_groups[species_name]["location"] = location
+                    species_groups[species_name]["latest_id"] = obs_id
+
+                # Update tier if this tier is "higher" in precedence
+                # Tier precedence: wild > assisted > captive > dead > evidence
+                tier_precedence = {"wild": 5, "assisted": 4, "captive": 3, "dead": 2, "evidence": 1}
+                current_tier_value = tier_precedence.get(species_groups[species_name]["tier"], 0)
+                new_tier_value = tier_precedence.get(tier, 0)
+
+                if new_tier_value > current_tier_value:
+                    species_groups[species_name]["tier"] = tier
+
+        # Add each species group to the list
+        for species_name, data in species_groups.items():
+            obs_id = data["latest_id"]
+            obs_date = data["date"]
+            location = data["location"]
+            tier = data["tier"]
+            observation_count = len(data["observation_ids"])
 
             item = ctk.CTkFrame(self.observations_container)
             item.pack(fill=tk.X, padx=5, pady=2)
 
-            # Try to get the primary photo for this observation
+            # Try to get the primary photo for this species
             photo_thumbnail = None
-            photos = self.db.get_photos(obs_id)
+            all_photos = []
 
-            for photo in photos:
+            # Collect all photos from all observations of this species
+            for obs_id in data["observation_ids"]:
+                photos = self.db.get_photos(obs_id)
+                all_photos.extend(photos)
+
+            # Find primary photo among all photos
+            for photo in all_photos:
                 if photo[2]:  # is_primary
                     thumbnail = PhotoUtils.resize_image_for_thumbnail(photo[1])
                     if thumbnail:
                         photo_thumbnail = thumbnail
                         break
+
+            # If no primary photo found but photos exist, use the first one
+            if not photo_thumbnail and all_photos:
+                thumbnail = PhotoUtils.resize_image_for_thumbnail(all_photos[0][1])
+                if thumbnail:
+                    photo_thumbnail = thumbnail
 
             # Species name (with thumbnail if available)
             species_frame = ctk.CTkFrame(item)
@@ -1117,10 +1167,131 @@ class LifelistApp:
                 thumbnail_label.pack(side=tk.LEFT, padx=5)
                 thumbnail_label.image = photo_thumbnail  # Keep a reference
 
-            species_label = ctk.CTkLabel(species_frame, text=species_name, width=180)
+            # Add observation count to species name if there are multiple observations
+            display_name = species_name
+            if observation_count > 1:
+                display_name = f"{species_name} ({observation_count} observations)"
+
+            species_label = ctk.CTkLabel(species_frame, text=display_name, width=180)
             species_label.pack(side=tk.LEFT, padx=5)
 
             # Other fields
+            date_label = ctk.CTkLabel(item, text=obs_date or "N/A", width=100)
+            date_label.pack(side=tk.LEFT, padx=5)
+
+            location_label = ctk.CTkLabel(item, text=location or "N/A", width=200)
+            location_label.pack(side=tk.LEFT, padx=5)
+
+            tier_label = ctk.CTkLabel(item, text=tier or "N/A", width=100)
+            tier_label.pack(side=tk.LEFT, padx=5)
+
+            # Action buttons
+            actions_frame = ctk.CTkFrame(item)
+            actions_frame.pack(side=tk.LEFT, padx=5)
+
+            # If multiple observations, add a button to view all observations
+            if observation_count > 1:
+                view_all_btn = ctk.CTkButton(
+                    actions_frame,
+                    text="View All",
+                    width=70,
+                    command=lambda obs_ids=data["observation_ids"], name=species_name:
+                    self.view_species_observations(obs_ids, name)
+                )
+                view_all_btn.pack(side=tk.LEFT, padx=2)
+            else:
+                # For single observations, keep the normal view button
+                view_btn = ctk.CTkButton(
+                    actions_frame,
+                    text="View",
+                    width=70,
+                    command=lambda o_id=data["latest_id"]: self.view_observation(o_id)
+                )
+                view_btn.pack(side=tk.LEFT, padx=2)
+
+            # Add button to add a new observation of this species
+            add_btn = ctk.CTkButton(
+                actions_frame,
+                text="Add New",
+                width=70,
+                command=lambda species=species_name: self.add_new_observation_of_species(species)
+            )
+            add_btn.pack(side=tk.LEFT, padx=2)
+
+    def view_species_observations(self, observation_ids, species_name):
+        """Show a list of all observations for a specific species"""
+        # Clear the content area
+        for widget in self.content.winfo_children():
+            widget.destroy()
+
+        # Create container
+        container = ctk.CTkFrame(self.content)
+        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Header
+        header_frame = ctk.CTkFrame(container)
+        header_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text=f"All Observations of {species_name}",
+            font=ctk.CTkFont(size=20, weight="bold")
+        )
+        title_label.pack(side=tk.LEFT, padx=10)
+
+        back_btn = ctk.CTkButton(
+            header_frame,
+            text="Back to Lifelist",
+            command=lambda: self.open_lifelist(self.current_lifelist_id, self.get_lifelist_name())
+        )
+        back_btn.pack(side=tk.RIGHT, padx=5)
+
+        add_btn = ctk.CTkButton(
+            header_frame,
+            text="Add Observation",
+            command=lambda: self.add_new_observation_of_species(species_name)
+        )
+        add_btn.pack(side=tk.RIGHT, padx=5)
+
+        # List frame
+        list_frame = ctk.CTkFrame(container)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Scrollable frame for observations
+        list_canvas = tk.Canvas(list_frame, bg="#2b2b2b", highlightthickness=0)
+        scrollbar = ctk.CTkScrollbar(list_frame, orientation="vertical", command=list_canvas.yview)
+        list_canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        list_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        observations_container = ctk.CTkFrame(list_canvas)
+        list_canvas.create_window((0, 0), window=observations_container, anchor="nw")
+
+        observations_container.bind("<Configure>",
+                                    lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all")))
+        list_canvas.bind("<Configure>", lambda e: list_canvas.itemconfig("win", width=e.width))
+
+        # Header for the list
+        header = ctk.CTkFrame(observations_container)
+        header.pack(fill=tk.X, padx=5, pady=5)
+
+        ctk.CTkLabel(header, text="Date", width=100).pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(header, text="Location", width=200).pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(header, text="Tier", width=100).pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(header, text="Actions", width=150).pack(side=tk.LEFT, padx=5)
+
+        # Add each observation
+        for obs_id in observation_ids:
+            observation = self.db.get_observation_details(obs_id)[0]
+            if not observation:
+                continue
+
+            _, _, _, obs_date, location, _, _, tier, _ = observation
+
+            item = ctk.CTkFrame(observations_container)
+            item.pack(fill=tk.X, padx=5, pady=2)
+
             date_label = ctk.CTkLabel(item, text=obs_date or "N/A", width=100)
             date_label.pack(side=tk.LEFT, padx=5)
 
@@ -1149,6 +1320,38 @@ class LifelistApp:
                 command=lambda o_id=obs_id: self.show_observation_form(o_id)
             )
             edit_btn.pack(side=tk.LEFT, padx=2)
+
+    def add_new_observation_of_species(self, species_name):
+        """Open the observation form with the species name pre-filled"""
+        self.current_observation_id = None  # New observation
+
+        # Clear the content area and create the form exactly like show_observation_form does
+        # but pre-fill the species name
+        self.show_observation_form()
+
+        # After show_observation_form has created the form, find the species entry and set its value
+        # This is a bit of a hack, but CustomTkinter doesn't have a clear way to modify widgets after creation
+
+        # Find the species entry field in the form
+        for widget in self.content.winfo_children():
+            if isinstance(widget, ctk.CTkFrame):
+                for child in widget.winfo_children():
+                    if isinstance(child, tk.Canvas):
+                        for form_frame in child.winfo_children():
+                            for frame in form_frame.winfo_children():
+                                if isinstance(frame, ctk.CTkFrame):
+                                    for field_frame in frame.winfo_children():
+                                        if isinstance(field_frame, ctk.CTkFrame):
+                                            for label in field_frame.winfo_children():
+                                                if isinstance(label, ctk.CTkLabel) and label.cget(
+                                                        "text") == "Species Name:":
+                                                    # Found the species name label, now find the entry field
+                                                    for entry in field_frame.winfo_children():
+                                                        if isinstance(entry, ctk.CTkEntry):
+                                                            # Set the species name
+                                                            entry.delete(0, tk.END)
+                                                            entry.insert(0, species_name)
+                                                            return
 
     def apply_filters(self, search_term, tier):
         self.load_observations(
