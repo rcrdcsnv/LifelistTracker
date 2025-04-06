@@ -728,7 +728,7 @@ class MapGenerator:
         has_coords = False
         valid_markers = 0
 
-        # First pass - check if any observations have coordinates
+        # First find any coordinates to center the map
         for obs in observations:
             obs_id = obs[0]
             obs_details = db.get_observation_details(obs_id)[0]
@@ -737,8 +737,7 @@ class MapGenerator:
             if obs_details and obs_details[5] is not None and obs_details[6] is not None:
                 map_center = [obs_details[5], obs_details[6]]
                 has_coords = True
-                valid_markers += 1
-                continue
+                break
 
             # Check photo coordinates
             photos = db.get_photos(obs_id)
@@ -746,8 +745,10 @@ class MapGenerator:
                 if photo[3] is not None and photo[4] is not None:  # lat and lon
                     map_center = [photo[3], photo[4]]
                     has_coords = True
-                    valid_markers += 1
                     break
+
+            if has_coords:
+                break
 
         # If no coordinates found, return error
         if not has_coords:
@@ -759,37 +760,68 @@ class MapGenerator:
         # Add markers for each observation
         marker_cluster = MarkerCluster().add_to(m)
 
+        # Track which photos we've already created markers for to avoid duplicates
+        processed_locations = set()
+
         for obs in observations:
             obs_id, species_name, obs_date, location, tier = obs
 
-            # Try to get coordinates from observation
-            lat, lon = None, None
-
+            # Get observation details
             obs_details = db.get_observation_details(obs_id)[0]
+
+            # Add marker for observation coordinates if available
             if obs_details and obs_details[5] is not None and obs_details[6] is not None:
                 lat, lon = obs_details[5], obs_details[6]
+                location_key = f"{lat:.6f},{lon:.6f}"
 
-            # If no coordinates in observation, try photos
-            if lat is None or lon is None:
-                photos = db.get_photos(obs_id)
-                for photo in photos:
-                    if photo[3] is not None and photo[4] is not None:  # lat and lon
-                        lat, lon = photo[3], photo[4]
-                        break
+                # Only add if we haven't added this exact location before
+                if location_key not in processed_locations:
+                    processed_locations.add(location_key)
 
-            if lat is not None and lon is not None:
-                popup_content = f"""
-                <strong>{species_name}</strong><br>
-                Date: {obs_date or 'Unknown'}<br>
-                Location: {location or 'Unknown'}<br>
-                Tier: {tier or 'Unknown'}
-                """
+                    popup_content = f"""
+                    <strong>{species_name}</strong><br>
+                    Date: {obs_date or 'Unknown'}<br>
+                    Location: {location or 'Unknown'}<br>
+                    Tier: {tier or 'Unknown'}
+                    """
 
-                folium.Marker(
-                    [lat, lon],
-                    popup=folium.Popup(popup_content, max_width=300),
-                    tooltip=species_name
-                ).add_to(marker_cluster)
+                    folium.Marker(
+                        [lat, lon],
+                        popup=folium.Popup(popup_content, max_width=300),
+                        tooltip=species_name
+                    ).add_to(marker_cluster)
+
+                    valid_markers += 1
+
+            # Add markers for all photos with coordinates
+            photos = db.get_photos(obs_id)
+            for photo in photos:
+                if photo[3] is not None and photo[4] is not None:  # lat and lon
+                    lat, lon = photo[3], photo[4]
+                    location_key = f"{lat:.6f},{lon:.6f}"
+
+                    # Only add if we haven't added this exact location before
+                    if location_key not in processed_locations:
+                        processed_locations.add(location_key)
+
+                        # Get photo file name for the popup
+                        photo_file = os.path.basename(photo[1])
+
+                        popup_content = f"""
+                        <strong>{species_name}</strong><br>
+                        Date: {obs_date or 'Unknown'}<br>
+                        Location: {location or 'Unknown'}<br>
+                        Tier: {tier or 'Unknown'}<br>
+                        Photo: {photo_file}
+                        """
+
+                        folium.Marker(
+                            [lat, lon],
+                            popup=folium.Popup(popup_content, max_width=300),
+                            tooltip=species_name
+                        ).add_to(marker_cluster)
+
+                        valid_markers += 1
 
         # Save the map
         m.save(output_path)
