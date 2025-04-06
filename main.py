@@ -1606,6 +1606,19 @@ class LifelistApp:
                         return
 
                     obs_id = observation_id
+
+                    # For existing observations, get current photos and remove ones that are no longer in the UI
+                    current_photos = self.db.get_photos(obs_id)
+                    current_photo_ids = set(photo[0] for photo in current_photos)
+                    kept_photo_ids = set(photo.get("id") for photo in photos if "id" in photo)
+
+                    # Photos to delete = current photos that aren't in the kept photos list
+                    photos_to_delete = current_photo_ids - kept_photo_ids
+
+                    # Delete each photo that was removed
+                    for photo_id in photos_to_delete:
+                        self.db.delete_photo(photo_id)
+
                 else:
                     # Create new observation
                     obs_id = self.db.add_observation(
