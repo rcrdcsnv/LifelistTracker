@@ -718,6 +718,28 @@ class PhotoUtils:
             print(f"Error creating thumbnail: {e}")
             return None
 
+    @staticmethod
+    def image_to_base64(img_path, max_size=(200, 150)):
+        """Convert an image to a base64-encoded string for embedding in HTML"""
+        try:
+            import base64
+            from io import BytesIO
+
+            # Open and resize the image
+            img = Image.open(img_path)
+            img.thumbnail(max_size)
+
+            # Save to a BytesIO object
+            buffered = BytesIO()
+            img.save(buffered, format="JPEG")
+
+            # Get base64 encoding
+            img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            return img_str
+        except Exception as e:
+            print(f"Error encoding image: {e}")
+            return None
+
 
 class MapGenerator:
     @staticmethod
@@ -778,12 +800,28 @@ class MapGenerator:
                 if location_key not in processed_locations:
                     processed_locations.add(location_key)
 
-                    popup_content = f"""
-                    <strong>{species_name}</strong><br>
-                    Date: {obs_date or 'Unknown'}<br>
-                    Location: {location or 'Unknown'}<br>
-                    Tier: {tier or 'Unknown'}
-                    """
+                    # Try to get primary photo for this species
+                    species_primary = db.get_species_primary_photo(obs_details[1], species_name)
+                    img_base64 = None
+
+                    if species_primary:
+                        img_base64 = PhotoUtils.image_to_base64(species_primary[1])
+
+                    if img_base64:
+                        popup_content = f"""
+                                        <strong>{species_name}</strong><br>
+                                        <img src="data:image/jpeg;base64,{img_base64}" style="max-width:200px;"><br>
+                                        Date: {obs_date or 'Unknown'}<br>
+                                        Location: {location or 'Unknown'}<br>
+                                        Tier: {tier or 'Unknown'}<br>
+                                        """
+                    else:
+                        popup_content = f"""
+                                        <strong>{species_name}</strong><br>
+                                        Date: {obs_date or 'Unknown'}<br>
+                                        Location: {location or 'Unknown'}<br>
+                                        Tier: {tier or 'Unknown'}
+                                        """
 
                     folium.Marker(
                         [lat, lon],
@@ -804,16 +842,26 @@ class MapGenerator:
                     if location_key not in processed_locations:
                         processed_locations.add(location_key)
 
-                        # Get photo file name for the popup
-                        photo_file = os.path.basename(photo[1])
+                        # Get base64 encoded thumbnail of the photo
+                        img_base64 = PhotoUtils.image_to_base64(photo[1])
 
-                        popup_content = f"""
-                        <strong>{species_name}</strong><br>
-                        Date: {obs_date or 'Unknown'}<br>
-                        Location: {location or 'Unknown'}<br>
-                        Tier: {tier or 'Unknown'}<br>
-                        Photo: {photo_file}
-                        """
+                        if img_base64:
+                            popup_content = f"""
+                                              <strong>{species_name}</strong><br>
+                                              <img src="data:image/jpeg;base64,{img_base64}" style="max-width:200px;"><br>
+                                              Date: {obs_date or 'Unknown'}<br>
+                                              Location: {location or 'Unknown'}<br>
+                                              Tier: {tier or 'Unknown'}<br>
+                                              """
+                        else:
+                            # Fallback if image can't be encoded
+                            popup_content = f"""
+                                              <strong>{species_name}</strong><br>
+                                              Date: {obs_date or 'Unknown'}<br>
+                                              Location: {location or 'Unknown'}<br>
+                                              Tier: {tier or 'Unknown'}<br>
+                                              Photo: {os.path.basename(photo[1])}
+                                            """
 
                         folium.Marker(
                             [lat, lon],
