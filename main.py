@@ -719,26 +719,63 @@ class PhotoUtils:
             return None
 
     @staticmethod
-    def image_to_base64(img_path, max_size=(200, 150)):
-        """Convert an image to a base64-encoded string for embedding in HTML"""
+    def image_to_base64(img_path, max_size=(200, 150), is_pin=False):
+        """Convert an image to a base64-encoded string with optimal quality"""
         try:
             import base64
             from io import BytesIO
 
-            # Open and resize the image
+            # Open the image
             img = Image.open(img_path)
-            img.thumbnail(max_size)
 
-            # Save to a BytesIO object
-            buffered = BytesIO()
-            img.save(buffered, format="JPEG")
+            # Convert to RGB if needed (removes alpha channel that can cause issues)
+            if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                background.paste(img, mask=img.split()[3] if img.mode == 'RGBA' else None)
+                img = background
+
+            # For pins, use a different approach - crop to square first for better pins
+            if is_pin:
+                # Get dimensions
+                width, height = img.size
+
+                # Determine the crop box for a center square crop
+                if width > height:
+                    left = (width - height) / 2
+                    top = 0
+                    right = (width + height) / 2
+                    bottom = height
+                else:
+                    left = 0
+                    top = (height - width) / 2
+                    right = width
+                    bottom = (height + width) / 2
+
+                # Crop the image to a square
+                img = img.crop((left, top, right, bottom))
+
+                # Now resize to exact dimensions (not thumbnail which preserves aspect ratio)
+                # Use a fixed size for pins to ensure consistency
+                pin_size = (max_size[0], max_size[0])  # Make it square
+                img = img.resize(pin_size, Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.ANTIALIAS)
+
+                # Save as PNG for better quality
+                buffered = BytesIO()
+                img.save(buffered, format="PNG", optimize=True)
+            else:
+                # For popup images, use the thumbnail approach
+                img.thumbnail(max_size, Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.ANTIALIAS)
+
+                # Save as high-quality JPEG
+                buffered = BytesIO()
+                img.save(buffered, format="JPEG", quality=95, optimize=True)
 
             # Get base64 encoding
             img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
-            return img_str
+            return img_str, "png" if is_pin else "jpeg"
         except Exception as e:
             print(f"Error encoding image: {e}")
-            return None
+            return None, None
 
 
 class MapGenerator:
@@ -779,9 +816,6 @@ class MapGenerator:
         # Create map
         m = folium.Map(location=map_center, zoom_start=5)
 
-        # Add markers for each observation
-        marker_cluster = MarkerCluster().add_to(m)
-
         # Track which photos we've already created markers for to avoid duplicates
         processed_locations = set()
 
@@ -805,29 +839,64 @@ class MapGenerator:
                     img_base64 = None
 
                     if species_primary:
-                        img_base64 = PhotoUtils.image_to_base64(species_primary[1])
+                        img_base64 = PhotoUtils.image_to_base64(species_primary[1], max_size=(60, 60))
 
-                    if img_base64:
+                    # Create popup content with larger image
+                    if species_primary:
+                        popup_img_base64 = PhotoUtils.image_to_base64(species_primary[1], max_size=(200, 150))
                         popup_content = f"""
-                                        <strong>{species_name}</strong><br>
-                                        <img src="data:image/jpeg;base64,{img_base64}" style="max-width:200px;"><br>
-                                        Date: {obs_date or 'Unknown'}<br>
-                                        Location: {location or 'Unknown'}<br>
-                                        Tier: {tier or 'Unknown'}<br>
-                                        """
+                        <strong>{species_name}</strong><br>
+                        <img src="data:image/jpeg;base64,{popup_img_base64}" style="max-width:200px;"><br>
+                        Date: {obs_date or 'Unknown'}<br>
+                        Location: {location or 'Unknown'}<br>
+                        Tier: {tier or 'Unknown'}<br>
+                        """
                     else:
                         popup_content = f"""
-                                        <strong>{species_name}</strong><br>
-                                        Date: {obs_date or 'Unknown'}<br>
-                                        Location: {location or 'Unknown'}<br>
-                                        Tier: {tier or 'Unknown'}
-                                        """
+                        <strong>{species_name}</strong><br>
+                        Date: {obs_date or 'Unknown'}<br>
+                        Location: {location or 'Unknown'}<br>
+                        Tier: {tier or 'Unknown'}
+                        """
 
-                    folium.Marker(
-                        [lat, lon],
-                        popup=folium.Popup(popup_content, max_width=300),
-                        tooltip=species_name
-                    ).add_to(marker_cluster)
+                    # Create a marker with the image if available
+                    if img_base64:
+                        # Create a custom div icon with the thumbnail image and a pin-like appearance
+                        icon_html = f"""
+                        <div style="position: relative; width: 100px; height: 110px;">
+                            <div style="position: absolute; top: 0; width: 100px; height: 100px; border-radius: 50px; 
+                                border: 3px solid #3388ff; overflow: hidden; background-color: white; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);">
+                                <img src="data:image/{img_format};base64,{img_base64}" 
+                                    style="width: 100%; height: 100%; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges;">
+                            </div>
+                            <div style="position: absolute; bottom: 0; left: 42px; width: 0; height: 0; 
+                                border-left: 8px solid transparent; border-right: 8px solid transparent; 
+                                border-top: 15px solid #3388ff;">
+                            </div>
+                        </div>
+                        """
+
+                        # Create the custom icon
+                        icon = folium.DivIcon(
+                            icon_size=(100, 110),
+                            icon_anchor=(50, 110),  # Center bottom of the icon
+                            html=icon_html
+                        )
+
+                        # Add marker with custom icon
+                        folium.Marker(
+                            [lat, lon],
+                            popup=folium.Popup(popup_content, max_width=300),
+                            tooltip=species_name,
+                            icon=icon
+                        ).add_to(m)
+                    else:
+                        # Fallback to regular marker if no image
+                        folium.Marker(
+                            [lat, lon],
+                            popup=folium.Popup(popup_content, max_width=300),
+                            tooltip=species_name
+                        ).add_to(m)
 
                     valid_markers += 1
 
@@ -842,32 +911,69 @@ class MapGenerator:
                     if location_key not in processed_locations:
                         processed_locations.add(location_key)
 
-                        # Get base64 encoded thumbnail of the photo
-                        img_base64 = PhotoUtils.image_to_base64(photo[1])
+                        # Get thumbnail for icon with improved quality
+                        img_base64, img_format = PhotoUtils.image_to_base64(photo[1], max_size=(100, 100), is_pin=True)
 
-                        if img_base64:
+                        # Get larger image for popup
+                        popup_img_base64, popup_format = PhotoUtils.image_to_base64(photo[1], max_size=(300, 200))
+
+                        # Create popup content
+                        if popup_img_base64:
                             popup_content = f"""
-                                              <strong>{species_name}</strong><br>
-                                              <img src="data:image/jpeg;base64,{img_base64}" style="max-width:200px;"><br>
-                                              Date: {obs_date or 'Unknown'}<br>
-                                              Location: {location or 'Unknown'}<br>
-                                              Tier: {tier or 'Unknown'}<br>
-                                              """
+                            <strong>{species_name}</strong><br>
+                            <img src="data:image/jpeg;base64,{popup_img_base64}" style="max-width:200px;"><br>
+                            Date: {obs_date or 'Unknown'}<br>
+                            Location: {location or 'Unknown'}<br>
+                            Tier: {tier or 'Unknown'}<br>
+                            """
                         else:
                             # Fallback if image can't be encoded
                             popup_content = f"""
-                                              <strong>{species_name}</strong><br>
-                                              Date: {obs_date or 'Unknown'}<br>
-                                              Location: {location or 'Unknown'}<br>
-                                              Tier: {tier or 'Unknown'}<br>
-                                              Photo: {os.path.basename(photo[1])}
-                                            """
+                            <strong>{species_name}</strong><br>
+                            Date: {obs_date or 'Unknown'}<br>
+                            Location: {location or 'Unknown'}<br>
+                            Tier: {tier or 'Unknown'}<br>
+                            Photo: {os.path.basename(photo[1])}
+                            """
 
-                        folium.Marker(
-                            [lat, lon],
-                            popup=folium.Popup(popup_content, max_width=300),
-                            tooltip=species_name
-                        ).add_to(marker_cluster)
+                        # Create a marker with the image if available
+                        if img_base64:
+                            # Create a custom div icon with the thumbnail image
+                            icon_html = f"""
+                            <div style="position: relative; width: 100px; height: 110px;">
+                                <div style="position: absolute; top: 0; width: 100px; height: 100px; border-radius: 50px; 
+                                    border: 3px solid #3388ff; overflow: hidden; background-color: white; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);">
+                                    <img src="data:image/{img_format};base64,{img_base64}" 
+                                        style="width: 100%; height: 100%; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges;">
+                                </div>
+                                <div style="position: absolute; bottom: 0; left: 42px; width: 0; height: 0; 
+                                    border-left: 8px solid transparent; border-right: 8px solid transparent; 
+                                    border-top: 15px solid #3388ff;">
+                                </div>
+                            </div>
+                            """
+
+                            # Create the custom icon
+                            icon = folium.DivIcon(
+                                icon_size=(100, 110),
+                                icon_anchor=(50, 110),  # Center bottom of the icon
+                                html=icon_html
+                            )
+
+                            # Add marker with custom icon
+                            folium.Marker(
+                                [lat, lon],
+                                popup=folium.Popup(popup_content, max_width=300),
+                                tooltip=species_name,
+                                icon=icon
+                            ).add_to(m)
+                        else:
+                            # Fallback to regular marker if no image
+                            folium.Marker(
+                                [lat, lon],
+                                popup=folium.Popup(popup_content, max_width=300),
+                                tooltip=species_name
+                            ).add_to(m)
 
                         valid_markers += 1
 
