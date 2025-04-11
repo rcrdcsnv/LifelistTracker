@@ -6,12 +6,14 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image, ImageTk
 import folium
-from folium.plugins import MarkerCluster
 import webbrowser
 import exifread
 from datetime import datetime
 import shutil
 import re
+import requests
+import tempfile
+import threading
 
 # Set appearance mode and default theme
 ctk.set_appearance_mode("System")
@@ -114,6 +116,47 @@ class Database:
         )
         ''')
 
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS taxonomies (
+                id INTEGER PRIMARY KEY,
+                lifelist_id INTEGER,
+                name TEXT,
+                version TEXT,
+                source TEXT,
+                description TEXT,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (lifelist_id) REFERENCES lifelists (id) ON DELETE CASCADE
+            )
+            ''')
+
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS taxonomy_entries (
+                id INTEGER PRIMARY KEY,
+                taxonomy_id INTEGER,
+                scientific_name TEXT,
+                common_name TEXT,
+                family TEXT,
+                genus TEXT,
+                species TEXT,
+                subspecies TEXT,
+                order_name TEXT,
+                class_name TEXT,
+                code TEXT,
+                rank TEXT,
+                is_custom INTEGER DEFAULT 0,
+                additional_data TEXT,  -- JSON field for flexible storage
+                FOREIGN KEY (taxonomy_id) REFERENCES taxonomies (id) ON DELETE CASCADE
+            )
+            ''')
+
+        # Create indices for fast lookup
+        self.cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_taxonomy_scientific ON taxonomy_entries (taxonomy_id, scientific_name)')
+        self.cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_taxonomy_common ON taxonomy_entries (taxonomy_id, common_name)')
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_taxonomy_family ON taxonomy_entries (taxonomy_id, family)')
+
         self.conn.commit()
 
     def create_lifelist(self, name, taxonomy=None):
@@ -188,6 +231,175 @@ class Database:
 
         self.conn.commit()
         return True
+
+    def add_taxonomy(self, lifelist_id, name, version=None, source=None, description=None):
+        """Add a new taxonomy to a lifelist"""
+        try:
+            self.cursor.execute(
+                """INSERT INTO taxonomies 
+                (lifelist_id, name, version, source, description) 
+                VALUES (?, ?, ?, ?, ?)""",
+                (lifelist_id, name, version, source, description)
+            )
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.Error as e:
+            print(f"Error adding taxonomy: {e}")
+            return None
+
+    def get_taxonomies(self, lifelist_id):
+        """Get all taxonomies for a lifelist"""
+        self.cursor.execute(
+            """SELECT id, name, version, source, description, is_active 
+            FROM taxonomies WHERE lifelist_id = ?""",
+            (lifelist_id,)
+        )
+        return self.cursor.fetchall()
+
+    def get_active_taxonomy(self, lifelist_id):
+        """Get the active taxonomy for a lifelist"""
+        self.cursor.execute(
+            """SELECT id, name, version, source, description 
+            FROM taxonomies WHERE lifelist_id = ? AND is_active = 1""",
+            (lifelist_id,)
+        )
+        return self.cursor.fetchone()
+
+    def set_active_taxonomy(self, taxonomy_id, lifelist_id):
+        """Set a taxonomy as active for a lifelist"""
+        try:
+            # First, set all taxonomies for this lifelist as inactive
+            self.cursor.execute(
+                "UPDATE taxonomies SET is_active = 0 WHERE lifelist_id = ?",
+                (lifelist_id,)
+            )
+
+            # Then set the selected taxonomy as active
+            self.cursor.execute(
+                "UPDATE taxonomies SET is_active = 1 WHERE id = ?",
+                (taxonomy_id,)
+            )
+
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Error setting active taxonomy: {e}")
+            return False
+
+    def add_taxonomy_entry(self, taxonomy_id, scientific_name, common_name=None, family=None,
+                           genus=None, species=None, subspecies=None, order_name=None,
+                           class_name=None, code=None, rank=None, is_custom=0, additional_data=None):
+        """Add an entry to a taxonomy"""
+        try:
+            # Convert additional_data dict to JSON string if provided
+            if additional_data and isinstance(additional_data, dict):
+                additional_data = json.dumps(additional_data)
+
+            self.cursor.execute(
+                """INSERT INTO taxonomy_entries 
+                (taxonomy_id, scientific_name, common_name, family, genus, species, 
+                subspecies, order_name, class_name, code, rank, is_custom, additional_data) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (taxonomy_id, scientific_name, common_name, family, genus, species,
+                 subspecies, order_name, class_name, code, rank, is_custom, additional_data)
+            )
+
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.Error as e:
+            print(f"Error adding taxonomy entry: {e}")
+            return None
+
+    def search_taxonomy(self, taxonomy_id, search_term, limit=10):
+        """Search for entries in a taxonomy"""
+        search_param = f"%{search_term}%"
+
+        self.cursor.execute(
+            """SELECT id, scientific_name, common_name, family, genus, species 
+            FROM taxonomy_entries 
+            WHERE taxonomy_id = ? AND 
+            (scientific_name LIKE ? OR common_name LIKE ?)
+            ORDER BY 
+                CASE WHEN scientific_name LIKE ? THEN 1
+                     WHEN common_name LIKE ? THEN 2
+                     ELSE 3
+                END,
+                scientific_name
+            LIMIT ?""",
+            (taxonomy_id, search_param, search_param, f"{search_term}%", f"{search_term}%", limit)
+        )
+
+        return self.cursor.fetchall()
+
+    def import_csv_taxonomy(self, taxonomy_id, csv_file, mapping):
+        """Import taxonomy entries from a CSV file using the provided field mapping"""
+        try:
+            import csv
+
+            # Read the CSV file
+            with open(csv_file, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+
+                # Track the number of entries added
+                count = 0
+
+                # Begin a transaction for better performance
+                self.conn.execute("BEGIN TRANSACTION")
+
+                # Process each row
+                for row in reader:
+                    # Map CSV fields to database fields using the provided mapping
+                    entry_data = {}
+
+                    for db_field, csv_field in mapping.items():
+                        if csv_field in row:
+                            entry_data[db_field] = row[csv_field]
+
+                    # Check if we have at least a scientific name
+                    if 'scientific_name' in entry_data and entry_data['scientific_name']:
+                        # Add any unmapped data to the additional_data field
+                        additional_data = {}
+                        for key, value in row.items():
+                            if key not in mapping.values() and value:
+                                additional_data[key] = value
+
+                        # Only add additional_data if we have any
+                        if additional_data:
+                            entry_data['additional_data'] = json.dumps(additional_data)
+
+                        # Add the entry to the database
+                        self.cursor.execute(
+                            """INSERT INTO taxonomy_entries 
+                            (taxonomy_id, scientific_name, common_name, family, genus, species, 
+                            subspecies, order_name, class_name, code, rank, is_custom, additional_data) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                taxonomy_id,
+                                entry_data.get('scientific_name'),
+                                entry_data.get('common_name'),
+                                entry_data.get('family'),
+                                entry_data.get('genus'),
+                                entry_data.get('species'),
+                                entry_data.get('subspecies'),
+                                entry_data.get('order_name'),
+                                entry_data.get('class_name'),
+                                entry_data.get('code'),
+                                entry_data.get('rank'),
+                                0,  # is_custom
+                                entry_data.get('additional_data')
+                            )
+                        )
+
+                        count += 1
+
+                # Commit the transaction
+                self.conn.commit()
+
+                return count
+        except Exception as e:
+            self.conn.rollback()
+            print(f"Error importing taxonomy from CSV: {e}")
+            return -1
 
     def add_observation(self, lifelist_id, species_name, observation_date=None,
                         location=None, latitude=None, longitude=None, tier="wild", notes=None):
@@ -1466,6 +1678,13 @@ class LifelistApp:
         )
         edit_tiers_btn.pack(side=tk.RIGHT, padx=5)
 
+        taxonomy_btn = ctk.CTkButton(
+            header_frame,
+            text="Manage Taxonomies",
+            command=self.manage_taxonomies
+        )
+        taxonomy_btn.pack(side=tk.RIGHT, padx=5)
+
         add_btn = ctk.CTkButton(
             header_frame,
             text="Add Observation",
@@ -2105,6 +2324,198 @@ class LifelistApp:
         )
         apply_btn.pack(pady=10)
 
+    def download_standard_taxonomy(self, taxonomy_info):
+        """Download and import a standard taxonomy"""
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(f"Downloading {taxonomy_info['name']}")
+        dialog.geometry("400x200")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Center the dialog
+        dialog.update_idletasks()
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+        x = (dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (dialog.winfo_screenheight() // 2) - (height // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+
+        # Progress display
+        status_label = ctk.CTkLabel(
+            dialog,
+            text=f"Downloading {taxonomy_info['name']}...",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        status_label.pack(pady=20)
+
+        progress_bar = ctk.CTkProgressBar(dialog, width=300)
+        progress_bar.pack(pady=10)
+        progress_bar.set(0)
+
+        info_label = ctk.CTkLabel(dialog, text="Starting download...")
+        info_label.pack(pady=10)
+
+        cancel_btn = ctk.CTkButton(
+            dialog,
+            text="Cancel",
+            command=dialog.destroy
+        )
+        cancel_btn.pack(pady=10)
+
+        # Dictionary of standard taxonomy download endpoints and mapping information
+        taxonomy_endpoints = {
+            "eBird Taxonomy v2023": {
+                "url": "https://media.ebird.org/catalog/resource/eBird_Taxonomy_v2023.csv",
+                "mapping": {
+                    "scientific_name": "SCI_NAME",
+                    "common_name": "PRIMARY_COM_NAME",
+                    "family": "FAMILY",
+                    "order_name": "ORDER1",
+                    "species": "SPECIES_CODE"
+                }
+            },
+            "IOC World Bird List v13.1": {
+                "url": "https://www.worldbirdnames.org/IOC_names_export_13.1.csv",
+                "mapping": {
+                    "scientific_name": "Scientific name",
+                    "common_name": "English name",
+                    "family": "Family",
+                    "order_name": "Order"
+                }
+            },
+            "Mammal Species of the World": {
+                "url": "https://www.mammaldiversity.org/assets/data/MDD_v1.11_6818species.csv",
+                "mapping": {
+                    "scientific_name": "sciName",
+                    "common_name": "vernacularName",
+                    "family": "familyNameValid",
+                    "order_name": "orderNameValid",
+                    "genus": "genusNameValid",
+                    "species": "speciesNameValid"
+                }
+            },
+            "The Plant List": {
+                "url": "https://raw.githubusercontent.com/crazybilly/tpldata/master/data/namesAccepted.csv",
+                "mapping": {
+                    "scientific_name": "ScientificName",
+                    "family": "Family",
+                    "genus": "Genus",
+                    "species": "Species"
+                }
+            },
+            "Catalog of Life": {
+                "url": "https://api.checklistbank.org/dataset/9820/export.csv?format=SimpleDwC",
+                "mapping": {
+                    "scientific_name": "scientificName",
+                    "common_name": "vernacularName",
+                    "family": "family",
+                    "order_name": "order",
+                    "genus": "genus",
+                    "species": "specificEpithet",
+                    "rank": "taxonRank"
+                }
+            }
+        }
+
+        # Configure the download based on the selected taxonomy
+        endpoint_info = taxonomy_endpoints.get(taxonomy_info["name"])
+
+        if not endpoint_info:
+            status_label.configure(text="Error: Taxonomy information not found")
+            info_label.configure(text="Please try a different taxonomy")
+            return
+
+        def download_task():
+            try:
+                # Update status
+                status_label.configure(text=f"Downloading {taxonomy_info['name']}...")
+                info_label.configure(text="Connecting to server...")
+
+                # Create a temporary file to store the download
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+                temp_file_path = temp_file.name
+                temp_file.close()
+
+                # Download the file with progress tracking
+                response = requests.get(endpoint_info["url"], stream=True)
+                response.raise_for_status()
+
+                # Get total file size
+                total_size = int(response.headers.get('content-length', 0))
+
+                # Download with progress updates
+                downloaded = 0
+                with open(temp_file_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+
+                            # Update progress
+                            if total_size:
+                                progress = downloaded / total_size
+                                dialog.after(0, lambda p=progress: progress_bar.set(p))
+                                dialog.after(0, lambda d=downloaded, t=total_size:
+                                info_label.configure(
+                                    text=f"Downloaded {d / 1024 / 1024:.1f} MB of {t / 1024 / 1024:.1f} MB"))
+
+                # Update status
+                dialog.after(0, lambda: status_label.configure(text="Processing data..."))
+                dialog.after(0, lambda: info_label.configure(text="This may take a few moments..."))
+                dialog.after(0, lambda: progress_bar.set(0))
+
+                # Process the downloaded CSV
+                # Create the taxonomy
+                taxonomy_id = self.db.add_taxonomy(
+                    self.current_lifelist_id,
+                    taxonomy_info["name"],
+                    version=taxonomy_info.get("version", ""),
+                    source=taxonomy_info.get("url", ""),
+                    description=taxonomy_info.get("description", "")
+                )
+
+                if not taxonomy_id:
+                    dialog.after(0, lambda: status_label.configure(text="Error: Failed to create taxonomy"))
+                    dialog.after(0, lambda: info_label.configure(text="Could not add taxonomy to database"))
+                    return
+
+                # Import the CSV
+                count = self.db.import_csv_taxonomy(taxonomy_id, temp_file_path, endpoint_info["mapping"])
+
+                # Set as active taxonomy if it's the first one
+                if not self.db.get_active_taxonomy(self.current_lifelist_id):
+                    self.db.set_active_taxonomy(taxonomy_id, self.current_lifelist_id)
+
+                # Clean up the temporary file
+                try:
+                    os.unlink(temp_file_path)
+                except:
+                    pass
+
+                if count >= 0:
+                    dialog.after(0, lambda: status_label.configure(text="Download Complete"))
+                    dialog.after(0,
+                                 lambda: info_label.configure(text=f"Successfully imported {count} taxonomy entries"))
+                    dialog.after(0, lambda: progress_bar.set(1))
+                    dialog.after(0, lambda: cancel_btn.configure(text="Close"))
+
+                    # Close dialog and reopen taxonomy manager after a delay
+                    dialog.after(3000, lambda: (dialog.destroy(), self.manage_taxonomies()))
+                else:
+                    dialog.after(0, lambda: status_label.configure(text="Error: Import Failed"))
+                    dialog.after(0, lambda: info_label.configure(text="Failed to import taxonomy data"))
+                    dialog.after(0, lambda: cancel_btn.configure(text="Close"))
+
+            except Exception as e:
+                dialog.after(0, lambda: status_label.configure(text="Error"))
+                dialog.after(0, lambda: info_label.configure(text=f"Download failed: {str(e)}"))
+                dialog.after(0, lambda: cancel_btn.configure(text="Close"))
+
+        # Start the download in a separate thread
+        download_thread = threading.Thread(target=download_task)
+        download_thread.daemon = True
+        download_thread.start()
+
     def show_observation_form(self, observation_id=None):
         self.current_observation_id = observation_id
 
@@ -2143,13 +2554,115 @@ class LifelistApp:
         form_fields_frame = ctk.CTkFrame(form_frame)
         form_fields_frame.pack(fill=tk.X, padx=20, pady=10)
 
-        # Species field
+        # Species field with auto-suggestion
         species_frame = ctk.CTkFrame(form_fields_frame)
         species_frame.pack(fill=tk.X, pady=5)
 
         ctk.CTkLabel(species_frame, text="Species Name:", width=150).pack(side=tk.LEFT, padx=5)
-        species_entry = ctk.CTkEntry(species_frame, width=300)
-        species_entry.pack(side=tk.LEFT, padx=5)
+
+        # Create a frame for the species input and suggestion list
+        species_input_frame = ctk.CTkFrame(species_frame)
+        species_input_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        species_entry = ctk.CTkEntry(species_input_frame, width=300)
+        species_entry.pack(side=tk.TOP, fill=tk.X, pady=2)
+
+        # Suggestion listbox (hidden initially)
+        suggestion_frame = ctk.CTkFrame(species_input_frame)
+        suggestion_list = tk.Listbox(suggestion_frame, bg="#2b2b2b", fg="white", height=5)
+        suggestion_list.pack(fill=tk.BOTH, expand=True)
+
+        # Variables to control suggestions
+        suggestion_var = tk.StringVar()
+        suggestions = []
+        showing_suggestions = False
+
+        def update_suggestions(event):
+            global showing_suggestions, suggestions
+
+            # Get the current text
+            text = species_entry.get().strip()
+
+            if not text or len(text) < 2:
+                if showing_suggestions:
+                    suggestion_frame.pack_forget()
+                    showing_suggestions = False
+                return
+
+            # Get active taxonomy
+            active_tax = self.db.get_active_taxonomy(self.current_lifelist_id)
+
+            if active_tax:
+                # Search the taxonomy
+                results = self.db.search_taxonomy(active_tax[0], text)
+
+                if results:
+                    # Clear current suggestions
+                    suggestion_list.delete(0, tk.END)
+                    suggestions = []
+
+                    # Add new suggestions
+                    for _, scientific_name, common_name, family, _, _ in results:
+                        display_name = scientific_name
+                        if common_name:
+                            display_name = f"{common_name} ({scientific_name})"
+
+                        suggestion_list.insert(tk.END, display_name)
+                        suggestions.append((scientific_name, common_name))
+
+                    # Show the suggestion frame if not already showing
+                    if not showing_suggestions:
+                        suggestion_frame.pack(side=tk.TOP, fill=tk.X, pady=2)
+                        showing_suggestions = True
+                else:
+                    # No results, hide suggestions
+                    if showing_suggestions:
+                        suggestion_frame.pack_forget()
+                        showing_suggestions = False
+            else:
+                # No active taxonomy, hide suggestions
+                if showing_suggestions:
+                    suggestion_frame.pack_forget()
+                    showing_suggestions = False
+
+        def select_suggestion(event):
+            global showing_suggestions
+
+            if not showing_suggestions:
+                return
+
+            # Get selected suggestion
+            try:
+                index = suggestion_list.curselection()[0]
+                scientific_name, common_name = suggestions[index]
+
+                # Set the species entry to the selected suggestion
+                if common_name:
+                    species_entry.delete(0, tk.END)
+                    species_entry.insert(0, common_name)
+                else:
+                    species_entry.delete(0, tk.END)
+                    species_entry.insert(0, scientific_name)
+
+                # Hide suggestions
+                suggestion_frame.pack_forget()
+                showing_suggestions = False
+            except:
+                pass
+
+        # Bind events
+        species_entry.bind("<KeyRelease>", update_suggestions)
+        suggestion_list.bind("<ButtonRelease-1>", select_suggestion)
+        suggestion_list.bind("<Return>", select_suggestion)
+
+        # Add a button to manage taxonomies
+        taxonomy_btn = ctk.CTkButton(
+            species_frame,
+            text="Manage",
+            width=70,
+            command=self.manage_taxonomies
+        )
+        taxonomy_btn.pack(side=tk.LEFT, padx=5)
 
         # Date field
         date_frame = ctk.CTkFrame(form_fields_frame)
@@ -3080,6 +3593,429 @@ class LifelistApp:
             self.setup_sidebar()
         else:
             messagebox.showerror("Import Error", message)
+
+    def manage_taxonomies(self):
+        """Open the taxonomy management dialog"""
+        if not self.current_lifelist_id:
+            return
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Manage Taxonomies")
+        dialog.geometry("800x600")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Center the dialog
+        dialog.update_idletasks()
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+        x = (dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (dialog.winfo_screenheight() // 2) - (height // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+
+        # Create a tabbed interface
+        tabview = ctk.CTkTabview(dialog)
+        tabview.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Create tabs
+        taxonomies_tab = tabview.add("My Taxonomies")
+        import_tab = tabview.add("Import Taxonomy")
+        download_tab = tabview.add("Download Standard Taxonomies")
+
+        # Set default tab
+        tabview.set("My Taxonomies")
+
+        # My Taxonomies tab
+        taxonomies_frame = ctk.CTkFrame(taxonomies_tab)
+        taxonomies_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Get current taxonomies
+        taxonomies = self.db.get_taxonomies(self.current_lifelist_id)
+
+        if taxonomies:
+            # Create a list of taxonomies
+            headers = ctk.CTkFrame(taxonomies_frame)
+            headers.pack(fill=tk.X, pady=5)
+
+            ctk.CTkLabel(headers, text="Name", width=150, font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
+            ctk.CTkLabel(headers, text="Version", width=100, font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
+            ctk.CTkLabel(headers, text="Source", width=150, font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
+            ctk.CTkLabel(headers, text="Entries", width=80, font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
+            ctk.CTkLabel(headers, text="Status", width=80, font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
+
+            taxonomy_list = ctk.CTkScrollableFrame(taxonomies_frame)
+            taxonomy_list.pack(fill=tk.BOTH, expand=True, pady=5)
+
+            for tax_id, name, version, source, description, is_active in taxonomies:
+                # Count entries in this taxonomy
+                self.db.cursor.execute("SELECT COUNT(*) FROM taxonomy_entries WHERE taxonomy_id = ?", (tax_id,))
+                count = self.db.cursor.fetchone()[0]
+
+                row = ctk.CTkFrame(taxonomy_list)
+                row.pack(fill=tk.X, pady=2)
+
+                ctk.CTkLabel(row, text=name, width=150).pack(side=tk.LEFT, padx=5)
+                ctk.CTkLabel(row, text=version or "", width=100).pack(side=tk.LEFT, padx=5)
+                ctk.CTkLabel(row, text=source or "", width=150).pack(side=tk.LEFT, padx=5)
+                ctk.CTkLabel(row, text=str(count), width=80).pack(side=tk.LEFT, padx=5)
+
+                # Status (active/inactive)
+                status_text = "Active" if is_active else "Inactive"
+                status_color = "green" if is_active else "gray50"
+                status_label = ctk.CTkLabel(row, text=status_text, width=80, text_color=status_color)
+                status_label.pack(side=tk.LEFT, padx=5)
+
+                # Action buttons
+                actions_frame = ctk.CTkFrame(row)
+                actions_frame.pack(side=tk.RIGHT, padx=5)
+
+                if not is_active:
+                    activate_btn = ctk.CTkButton(
+                        actions_frame,
+                        text="Set Active",
+                        width=80,
+                        command=lambda t_id=tax_id: activate_taxonomy(t_id)
+                    )
+                    activate_btn.pack(side=tk.LEFT, padx=2)
+
+                delete_btn = ctk.CTkButton(
+                    actions_frame,
+                    text="Delete",
+                    width=70,
+                    fg_color="red3",
+                    hover_color="red4",
+                    command=lambda t_id=tax_id: delete_taxonomy(t_id)
+                )
+                delete_btn.pack(side=tk.LEFT, padx=2)
+
+            def activate_taxonomy(taxonomy_id):
+                if self.db.set_active_taxonomy(taxonomy_id, self.current_lifelist_id):
+                    messagebox.showinfo("Success", "Taxonomy activated successfully")
+                    dialog.destroy()
+                    self.manage_taxonomies()  # Reopen with updated info
+                else:
+                    messagebox.showerror("Error", "Failed to activate taxonomy")
+
+            def delete_taxonomy(taxonomy_id):
+                confirm = messagebox.askyesno(
+                    "Confirm Delete",
+                    "Are you sure you want to delete this taxonomy? This cannot be undone."
+                )
+
+                if confirm:
+                    self.db.cursor.execute("DELETE FROM taxonomies WHERE id = ?", (taxonomy_id,))
+                    self.db.conn.commit()
+                    messagebox.showinfo("Success", "Taxonomy deleted successfully")
+                    dialog.destroy()
+                    self.manage_taxonomies()  # Reopen with updated info
+        else:
+            # No taxonomies yet
+            no_tax_label = ctk.CTkLabel(
+                taxonomies_frame,
+                text="No taxonomies added yet. Use the Import or Download tabs to add a taxonomy.",
+                wraplength=500
+            )
+            no_tax_label.pack(pady=50)
+
+        # Import Taxonomy tab
+        import_frame = ctk.CTkFrame(import_tab)
+        import_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Step 1: Basic details
+        step1_frame = ctk.CTkFrame(import_frame)
+        step1_frame.pack(fill=tk.X, pady=10)
+
+        ctk.CTkLabel(step1_frame, text="Step 1: Taxonomy Details", font=ctk.CTkFont(size=16, weight="bold")).pack(
+            pady=5)
+
+        name_frame = ctk.CTkFrame(step1_frame)
+        name_frame.pack(fill=tk.X, pady=2)
+        ctk.CTkLabel(name_frame, text="Taxonomy Name:", width=150).pack(side=tk.LEFT, padx=5)
+        name_entry = ctk.CTkEntry(name_frame, width=300)
+        name_entry.pack(side=tk.LEFT, padx=5)
+
+        version_frame = ctk.CTkFrame(step1_frame)
+        version_frame.pack(fill=tk.X, pady=2)
+        ctk.CTkLabel(version_frame, text="Version:", width=150).pack(side=tk.LEFT, padx=5)
+        version_entry = ctk.CTkEntry(version_frame, width=300)
+        version_entry.pack(side=tk.LEFT, padx=5)
+
+        source_frame = ctk.CTkFrame(step1_frame)
+        source_frame.pack(fill=tk.X, pady=2)
+        ctk.CTkLabel(source_frame, text="Source:", width=150).pack(side=tk.LEFT, padx=5)
+        source_entry = ctk.CTkEntry(source_frame, width=300)
+        source_entry.pack(side=tk.LEFT, padx=5)
+
+        # Step 2: File selection
+        step2_frame = ctk.CTkFrame(import_frame)
+        step2_frame.pack(fill=tk.X, pady=10)
+
+        ctk.CTkLabel(step2_frame, text="Step 2: Select File", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=5)
+
+        file_frame = ctk.CTkFrame(step2_frame)
+        file_frame.pack(fill=tk.X, pady=5)
+
+        file_path_var = tk.StringVar()
+        ctk.CTkLabel(file_frame, text="CSV File:", width=150).pack(side=tk.LEFT, padx=5)
+        file_path_entry = ctk.CTkEntry(file_frame, width=300, textvariable=file_path_var)
+        file_path_entry.pack(side=tk.LEFT, padx=5)
+
+        def select_file():
+            file = filedialog.askopenfilename(
+                title="Select Taxonomy File",
+                filetypes=[("CSV files", "*.csv"), ("Excel files", "*.xlsx;*.xls"), ("All files", "*.*")]
+            )
+            if file:
+                file_path_var.set(file)
+                # Try to read headers if it's a CSV
+                if file.lower().endswith('.csv'):
+                    try:
+                        import csv
+                        with open(file, 'r', encoding='utf-8') as f:
+                            reader = csv.reader(f)
+                            headers = next(reader)
+                            preview_headers(headers)
+                    except Exception as e:
+                        messagebox.showerror("Error", f"Failed to read CSV headers: {e}")
+
+        browse_btn = ctk.CTkButton(file_frame, text="Browse", width=80, command=select_file)
+        browse_btn.pack(side=tk.LEFT, padx=5)
+
+        # Step 3: Field mapping
+        step3_frame = ctk.CTkFrame(import_frame)
+        step3_frame.pack(fill=tk.X, pady=10)
+
+        ctk.CTkLabel(step3_frame, text="Step 3: Map Fields", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=5)
+
+        mapping_frame = ctk.CTkScrollableFrame(step3_frame, height=200)
+        mapping_frame.pack(fill=tk.X, pady=5)
+
+        # Variable to store field mappings
+        field_mappings = {}
+        csv_headers = []
+
+        def preview_headers(headers):
+            nonlocal csv_headers
+            csv_headers = headers
+
+            # Clear existing mappings
+            for widget in mapping_frame.winfo_children():
+                widget.destroy()
+
+            field_mappings.clear()
+
+            # Database fields to map
+            db_fields = [
+                ("scientific_name", "Scientific Name (required)"),
+                ("common_name", "Common Name"),
+                ("family", "Family"),
+                ("genus", "Genus"),
+                ("species", "Species"),
+                ("order_name", "Order"),
+                ("class_name", "Class"),
+                ("code", "Code/ID"),
+                ("rank", "Rank/Level")
+            ]
+
+            # Create mapping dropdowns for each database field
+            for db_field, display_name in db_fields:
+                row = ctk.CTkFrame(mapping_frame)
+                row.pack(fill=tk.X, pady=2)
+
+                ctk.CTkLabel(row, text=display_name + ":", width=200).pack(side=tk.LEFT, padx=5)
+
+                # Create dropdown with CSV headers
+                field_var = tk.StringVar()
+
+                # Try to guess the mapping based on common field names
+                guess = ""
+                for header in headers:
+                    header_lower = header.lower()
+                    if db_field == "scientific_name" and any(x in header_lower for x in ["scientific", "latin"]):
+                        guess = header
+                    elif db_field == "common_name" and any(x in header_lower for x in ["common", "english"]):
+                        guess = header
+                    elif db_field.lower() in header_lower:
+                        guess = header
+
+                if guess:
+                    field_var.set(guess)
+                    field_mappings[db_field] = guess
+
+                dropdown = ctk.CTkComboBox(
+                    row,
+                    values=[""] + headers,
+                    variable=field_var,
+                    width=300,
+                    command=lambda f=db_field, v=field_var: update_mapping(f, v.get())
+                )
+                dropdown.pack(side=tk.LEFT, padx=5)
+
+        def update_mapping(db_field, csv_field):
+            if csv_field:
+                field_mappings[db_field] = csv_field
+            elif db_field in field_mappings:
+                del field_mappings[db_field]
+
+        # Import button
+        import_btn = ctk.CTkButton(
+            import_frame,
+            text="Import Taxonomy",
+            command=lambda: import_taxonomy()
+        )
+        import_btn.pack(pady=15)
+
+        def import_taxonomy():
+            # Validate inputs
+            name = name_entry.get().strip()
+            if not name:
+                messagebox.showerror("Error", "Taxonomy name is required")
+                return
+
+            file_path = file_path_var.get()
+            if not file_path or not os.path.exists(file_path):
+                messagebox.showerror("Error", "Please select a valid file")
+                return
+
+            if "scientific_name" not in field_mappings or not field_mappings["scientific_name"]:
+                messagebox.showerror("Error", "Scientific Name mapping is required")
+                return
+
+            # Create the taxonomy
+            taxonomy_id = self.db.add_taxonomy(
+                self.current_lifelist_id,
+                name,
+                version_entry.get().strip() or None,
+                source_entry.get().strip() or None
+            )
+
+            if not taxonomy_id:
+                messagebox.showerror("Error", "Failed to create taxonomy")
+                return
+
+            # Import the data
+            count = self.db.import_csv_taxonomy(taxonomy_id, file_path, field_mappings)
+
+            if count >= 0:
+                messagebox.showinfo("Success", f"Successfully imported {count} taxonomy entries")
+
+                # Set this as the active taxonomy if it's the first one
+                if not self.db.get_active_taxonomy(self.current_lifelist_id):
+                    self.db.set_active_taxonomy(taxonomy_id, self.current_lifelist_id)
+
+                dialog.destroy()
+                self.manage_taxonomies()  # Reopen with updated info
+            else:
+                messagebox.showerror("Error", "Failed to import taxonomy data")
+
+        # Download Standard Taxonomies tab
+        download_frame = ctk.CTkFrame(download_tab)
+        download_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        ctk.CTkLabel(
+            download_tab,
+            text="Download Standard Taxonomies",
+            font=ctk.CTkFont(size=18, weight="bold")
+        ).pack(pady=10)
+
+        ctk.CTkLabel(
+            download_tab,
+            text="Select a standard taxonomy to download and import automatically.",
+            wraplength=500
+        ).pack(pady=5)
+
+        # List of standard taxonomies
+        standards_frame = ctk.CTkScrollableFrame(download_tab)
+        standards_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Define standard taxonomies with their info
+        standard_taxonomies = [
+            {
+                "name": "eBird Taxonomy v2023",
+                "description": "The eBird/Clements taxonomy, updated 2023",
+                "url": "https://www.birds.cornell.edu/clementschecklist/download/",
+                "type": "birds"
+            },
+            {
+                "name": "IOC World Bird List v13.1",
+                "description": "International Ornithological Congress bird list",
+                "url": "https://www.worldbirdnames.org/new/ioc-lists/master-list-2/",
+                "type": "birds"
+            },
+            {
+                "name": "Mammal Species of the World",
+                "description": "Comprehensive mammal taxonomy",
+                "url": "https://www.departments.bucknell.edu/biology/resources/msw3/",
+                "type": "mammals"
+            },
+            {
+                "name": "The Plant List",
+                "description": "Working list of all known plant species",
+                "url": "http://www.theplantlist.org/",
+                "type": "plants"
+            },
+            {
+                "name": "Catalog of Life",
+                "description": "Global index of all known species",
+                "url": "https://www.catalogueoflife.org/data/download",
+                "type": "comprehensive"
+            },
+        ]
+
+        for tax in standard_taxonomies:
+            tax_frame = ctk.CTkFrame(standards_frame)
+            tax_frame.pack(fill=tk.X, pady=5, padx=5)
+
+            info_frame = ctk.CTkFrame(tax_frame)
+            info_frame.pack(fill=tk.X, side=tk.TOP, pady=5, padx=5)
+
+            ctk.CTkLabel(
+                info_frame,
+                text=tax["name"],
+                font=ctk.CTkFont(size=14, weight="bold")
+            ).pack(anchor="w")
+
+            ctk.CTkLabel(
+                info_frame,
+                text=tax["description"],
+                wraplength=500
+            ).pack(anchor="w", pady=2)
+
+            ctk.CTkLabel(
+                info_frame,
+                text=f"Type: {tax['type']}",
+                font=ctk.CTkFont(size=12)
+            ).pack(anchor="w", pady=2)
+
+            btn_frame = ctk.CTkFrame(tax_frame)
+            btn_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=5, padx=5)
+
+            visit_btn = ctk.CTkButton(
+                btn_frame,
+                text="Visit Website",
+                width=120,
+                command=lambda url=tax["url"]: webbrowser.open(url)
+            )
+            visit_btn.pack(side=tk.LEFT, padx=5)
+
+            download_btn = ctk.CTkButton(
+                btn_frame,
+                text="Download & Import",
+                width=120,
+                command=lambda t=tax: self.download_standard_taxonomy(t)
+            )
+            download_btn.pack(side=tk.RIGHT, padx=5)
+
+        # Bottom buttons
+        btn_frame = ctk.CTkFrame(dialog)
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        close_btn = ctk.CTkButton(
+            btn_frame,
+            text="Close",
+            command=dialog.destroy
+        )
+        close_btn.pack(side=tk.RIGHT, padx=5)
 
 
 def main():
