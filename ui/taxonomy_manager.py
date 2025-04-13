@@ -8,6 +8,8 @@ import threading
 import tempfile
 import requests
 from os import path
+
+from database_factory import DatabaseFactory
 from ui.utils import center_window
 from file_utils import FileUtils
 
@@ -278,8 +280,9 @@ class TaxonomyManager:
         )
 
         if confirm:
-            self.db.cursor.execute("DELETE FROM taxonomies WHERE id = ?", (taxonomy_id,))
-            self.db.conn.commit()
+            with DatabaseFactory.get_database() as db:
+                db.cursor.execute("DELETE FROM taxonomies WHERE id = ?", (taxonomy_id,))
+                db.conn.commit()
             messagebox.showinfo("Success", "Taxonomy deleted successfully")
             dialog.destroy()
             self.show_dialog()  # Reopen with updated info

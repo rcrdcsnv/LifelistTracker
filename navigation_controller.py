@@ -120,12 +120,10 @@ class NavigationController:
         self.show_view('observation_form', lifelist_id=lifelist_id,
                        observation_id=observation_id, species_name=species_name)
 
-    def show_taxonomy_manager(self) -> None:
+    def show_taxonomy_manager(self):
         """Show the taxonomy manager dialog"""
-        from ui.taxonomy_manager import TaxonomyManager
-
-        taxonomy_manager = TaxonomyManager(self, self.db, self.root)
-        taxonomy_manager.show_dialog()
+        if hasattr(self.controller, 'taxonomy_manager'):
+            self.controller.taxonomy_manager.show_dialog()
 
     def show_welcome(self) -> None:
         """Show the welcome screen"""
