@@ -4,8 +4,10 @@ UI utilities - Common UI functions and dialogs
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
-import os
+from os import path
 import re
+
+from file_utils import FileUtils
 
 
 def show_message(title, message, message_type="info"):
@@ -123,8 +125,11 @@ def export_lifelist_dialog(root, db, lifelist_id, lifelist_name):
         return
 
     # Create a directory for this export
-    export_path = os.path.join(export_dir, re.sub(r'[^\w\s-]', '', lifelist_name).strip().replace(' ', '_'))
-    os.makedirs(export_path, exist_ok=True)
+    export_name = re.sub(r'[^\w\s-]', '', lifelist_name).strip().replace(' ', '_')
+    export_path = path.join(export_dir, export_name)
+
+    # Ensure directory exists
+    FileUtils.ensure_directory(export_path)
 
     # Ask if photos should be included
     include_photos = messagebox.askyesno(
@@ -164,10 +169,10 @@ def import_lifelist_dialog(root, db, callback):
 
     # Check for photos directory
     photos_dir = None
-    json_dir = os.path.dirname(json_file)
-    potential_photos_dir = os.path.join(json_dir, "photos")
+    json_dir = path.dirname(json_file)
+    potential_photos_dir = path.join(json_dir, "photos")
 
-    if os.path.isdir(potential_photos_dir):
+    if path.isdir(potential_photos_dir):
         include_photos = messagebox.askyesno(
             "Import Photos?",
             "A 'photos' directory was found. Would you like to include photos in the import?"

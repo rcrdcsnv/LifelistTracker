@@ -1,7 +1,6 @@
 """
 PhotoUtils - Utilities for working with photos and images
 """
-import os
 from datetime import datetime
 from PIL import Image, ImageTk
 import exifread
@@ -24,6 +23,7 @@ class PhotoUtils:
             tuple: (latitude, longitude, date_taken) or (None, None, None) if extraction fails
         """
         try:
+            # Use context manager for file operations
             with open(photo_path, 'rb') as f:
                 tags = exifread.process_file(f)
 
@@ -89,9 +89,11 @@ class PhotoUtils:
             or None if creation fails
         """
         try:
-            img = Image.open(img_path)
-            img.thumbnail(size)
-            return ImageTk.PhotoImage(img)
+            # Using PIL's context manager for opening images
+            with Image.open(img_path) as img:
+                img.thumbnail(size)
+                # Convert to PhotoImage (this creates a new object, so we're not closing prematurely)
+                return ImageTk.PhotoImage(img)
         except Exception as e:
             print(f"Error creating thumbnail: {e}")
             return None
@@ -113,54 +115,53 @@ class PhotoUtils:
             import base64
             from io import BytesIO
 
-            # Open the image
-            img = Image.open(img_path)
+            # Open the image with context manager
+            with Image.open(img_path) as img:
+                # Convert to RGB if needed
+                if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    background.paste(img, mask=img.split()[3] if img.mode == 'RGBA' else None)
+                    img = background
 
-            # Convert to RGB if needed
-            if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
-                background = Image.new('RGB', img.size, (255, 255, 255))
-                background.paste(img, mask=img.split()[3] if img.mode == 'RGBA' else None)
-                img = background
+                # For pins, use a different approach - crop to square first for better pins
+                if is_pin:
+                    # Get dimensions
+                    width, height = img.size
 
-            # For pins, use a different approach - crop to square first for better pins
-            if is_pin:
-                # Get dimensions
-                width, height = img.size
+                    # Determine the crop box for a center square crop
+                    if width > height:
+                        left = (width - height) / 2
+                        top = 0
+                        right = (width + height) / 2
+                        bottom = height
+                    else:
+                        left = 0
+                        top = (height - width) / 2
+                        right = width
+                        bottom = (height + width) / 2
 
-                # Determine the crop box for a center square crop
-                if width > height:
-                    left = (width - height) / 2
-                    top = 0
-                    right = (width + height) / 2
-                    bottom = height
+                    # Crop the image to a square
+                    img = img.crop((left, top, right, bottom))
+
+                    # Now resize to exact dimensions (not thumbnail which preserves aspect ratio)
+                    # Use a fixed size for pins to ensure consistency
+                    pin_size = (max_size[0], max_size[0])  # Make it square
+                    img = img.resize(pin_size, Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.ANTIALIAS)
+
+                    # Use context manager for BytesIO
+                    with BytesIO() as buffered:
+                        img.save(buffered, format="PNG", optimize=True)
+                        img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                        return img_str, "png"
                 else:
-                    left = 0
-                    top = (height - width) / 2
-                    right = width
-                    bottom = (height + width) / 2
+                    # For popup images, use the thumbnail approach
+                    img.thumbnail(max_size, Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.ANTIALIAS)
 
-                # Crop the image to a square
-                img = img.crop((left, top, right, bottom))
-
-                # Now resize to exact dimensions (not thumbnail which preserves aspect ratio)
-                # Use a fixed size for pins to ensure consistency
-                pin_size = (max_size[0], max_size[0])  # Make it square
-                img = img.resize(pin_size, Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.ANTIALIAS)
-
-                # Save as PNG for better quality
-                buffered = BytesIO()
-                img.save(buffered, format="PNG", optimize=True)
-            else:
-                # For popup images, use the thumbnail approach
-                img.thumbnail(max_size, Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.ANTIALIAS)
-
-                # Save as high-quality JPEG
-                buffered = BytesIO()
-                img.save(buffered, format="JPEG", quality=95, optimize=True)
-
-            # Get base64 encoding
-            img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
-            return img_str, "png" if is_pin else "jpeg"
+                    # Save as high-quality JPEG using context manager
+                    with BytesIO() as buffered:
+                        img.save(buffered, format="JPEG", quality=95, optimize=True)
+                        img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                        return img_str, "jpeg"
         except Exception as e:
             print(f"Error encoding image: {e}")
             return None, None

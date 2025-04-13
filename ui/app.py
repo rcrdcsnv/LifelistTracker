@@ -3,17 +3,15 @@ Main application module - Manages application state and UI components
 """
 import tkinter as tk
 import customtkinter as ctk
-from PIL import Image, ImageTk
-import os
-import webbrowser
 
 from database import Database
-from models.map_generator import MapGenerator
 from ui.lifelist_view import LifelistView
 from ui.observation_form import ObservationForm
 from ui.observation_view import ObservationView
 from ui.taxonomy_manager import TaxonomyManager
-from ui.utils import show_message, import_lifelist_dialog, export_lifelist_dialog
+from ui.utils import import_lifelist_dialog, export_lifelist_dialog
+from app_state import AppState
+from navigation_controller import NavigationController
 
 
 class LifelistApp:
@@ -32,7 +30,7 @@ class LifelistApp:
         self.root.title("Lifelist Manager")
         self.root.geometry("1200x800")
 
-        # Initialize database
+        # Initialize database with context manager support
         self.db = Database()
 
         # Set up the main container
@@ -47,11 +45,20 @@ class LifelistApp:
         self.content = ctk.CTkFrame(self.main_container)
         self.content.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Application state
-        self.current_lifelist_id = None
-        self.current_observation_id = None
+        # Create AppState to manage application state
+        self.app_state = AppState(self.db)
+        self.app_state.register_state_change_callback(self.setup_sidebar)
 
-        # Initialize UI components
+        # Create NavigationController for view management
+        self.nav_controller = NavigationController(self.content, self.app_state, self.db)
+
+        # Register views with the navigation controller
+        self.nav_controller.register_view('welcome_view', WelcomeView)
+        self.nav_controller.register_view('lifelist_view', LifelistView)
+        self.nav_controller.register_view('observation_view', ObservationView)
+        self.nav_controller.register_view('observation_form', ObservationForm)
+
+        # Legacy UI components (for backward compatibility)
         self.lifelist_view = LifelistView(self, self.db, self.content)
         self.observation_form = ObservationForm(self, self.db, self.content)
         self.observation_view = ObservationView(self, self.db, self.content)
@@ -106,7 +113,8 @@ class LifelistApp:
         import_btn.pack(pady=5, padx=10, fill=tk.X)
 
         # Only show export if a lifelist is selected
-        if self.current_lifelist_id:
+        current_lifelist_id = self.app_state.get_current_lifelist_id()
+        if current_lifelist_id:
             export_btn = ctk.CTkButton(
                 self.sidebar,
                 text="Export Current Lifelist",
@@ -125,12 +133,79 @@ class LifelistApp:
 
     def show_welcome_screen(self):
         """Display the welcome screen"""
+        # Transition to using the navigation controller
+        self.nav_controller.show_welcome()
+
+    def open_lifelist(self, lifelist_id, lifelist_name):
+        """
+        Open a lifelist and display its contents
+
+        Args:
+            lifelist_id: ID of the lifelist to open
+            lifelist_name: Name of the lifelist
+        """
+        # Update app state
+        self.app_state.set_current_lifelist(lifelist_id)
+
+        # For backward compatibility
+        self.current_lifelist_id = lifelist_id
+        self.current_observation_id = None
+
+        # Display the lifelist using existing view for now
+        self.lifelist_view.display_lifelist(lifelist_id, lifelist_name)
+
+    def show_create_lifelist_dialog(self):
+        """Show dialog to create a new lifelist"""
+        self.lifelist_view.show_create_lifelist_dialog()
+
+    def delete_current_lifelist(self):
+        """Delete the current lifelist"""
+        lifelist_id = self.app_state.get_current_lifelist_id()
+        self.lifelist_view.delete_lifelist(lifelist_id)
+
+    def import_lifelist(self):
+        """Import a lifelist from file"""
+        import_lifelist_dialog(self.root, self.db, self.setup_sidebar)
+
+    def export_lifelist(self):
+        """Export current lifelist to file"""
+        lifelist_id = self.app_state.get_current_lifelist_id()
+        lifelist_name = self.app_state.get_lifelist_name()
+        export_lifelist_dialog(self.root, self.db, lifelist_id, lifelist_name)
+
+    def get_lifelist_name(self):
+        """Get the name of the current lifelist"""
+        return self.app_state.get_lifelist_name()
+
+
+class WelcomeView:
+    """
+    Welcome screen view component
+    """
+
+    def __init__(self, controller, app_state, db, content_frame):
+        """
+        Initialize the welcome view
+
+        Args:
+            controller: Navigation controller
+            app_state: Application state manager
+            db: Database connection
+            content_frame: Content frame for displaying the view
+        """
+        self.controller = controller
+        self.app_state = app_state
+        self.db = db
+        self.content_frame = content_frame
+
+    def show(self, **kwargs):
+        """Display the welcome screen"""
         # Clear the content area
-        for widget in self.content.winfo_children():
+        for widget in self.content_frame.winfo_children():
             widget.destroy()
 
         # Create welcome screen
-        welcome_frame = ctk.CTkFrame(self.content)
+        welcome_frame = ctk.CTkFrame(self.content_frame)
         welcome_frame.pack(fill=tk.BOTH, expand=True)
 
         welcome_label = ctk.CTkLabel(
@@ -160,48 +235,3 @@ class LifelistApp:
             wraplength=600
         )
         intro_label.pack(pady=10)
-
-    def open_lifelist(self, lifelist_id, lifelist_name):
-        """
-        Open a lifelist and display its contents
-
-        Args:
-            lifelist_id: ID of the lifelist to open
-            lifelist_name: Name of the lifelist
-        """
-        self.current_lifelist_id = lifelist_id
-        self.current_observation_id = None
-
-        # Update sidebar to show export option
-        self.setup_sidebar()
-
-        # Display the lifelist
-        self.lifelist_view.display_lifelist(lifelist_id, lifelist_name)
-
-    def show_create_lifelist_dialog(self):
-        """Show dialog to create a new lifelist"""
-        self.lifelist_view.show_create_lifelist_dialog()
-
-    def delete_current_lifelist(self):
-        """Delete the current lifelist"""
-        self.lifelist_view.delete_lifelist(self.current_lifelist_id)
-
-    def import_lifelist(self):
-        """Import a lifelist from file"""
-        import_lifelist_dialog(self.root, self.db, self.setup_sidebar)
-
-    def export_lifelist(self):
-        """Export current lifelist to file"""
-        export_lifelist_dialog(self.root, self.db, self.current_lifelist_id, self.get_lifelist_name())
-
-    def get_lifelist_name(self):
-        """Get the name of the current lifelist"""
-        if not self.current_lifelist_id:
-            return ""
-
-        self.db.cursor.execute("SELECT name FROM lifelists WHERE id = ?", (self.current_lifelist_id,))
-        result = self.db.cursor.fetchone()
-
-        if result:
-            return result[0]
-        return ""

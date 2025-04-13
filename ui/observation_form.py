@@ -4,7 +4,6 @@ Observation form - Add and edit observations
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
-from PIL import Image, ImageTk
 from models.photo_utils import PhotoUtils
 from ui.utils import create_scrollable_container, create_labeled_entry
 
@@ -14,18 +13,20 @@ class ObservationForm:
     UI Component for adding and editing observations
     """
 
-    def __init__(self, app, db, content_frame):
+    def __init__(self, controller, app_state, db, content_frame):
         """
         Initialize the observation form
 
         Args:
-            app: Main application reference
+            controller: Navigation controller
+            app_state: Application state manager
             db: Database connection
             content_frame: Content frame for displaying the form
         """
-        self.app = app
+        self.controller = controller
+        self.app_state = app_state
         self.db = db
-        self.content = content_frame
+        self.content_frame = content_frame
 
         # Form state variables
         self.current_observation_id = None
@@ -48,7 +49,7 @@ class ObservationForm:
         self.suggestion_frame = None
         self.photos_display_frame = None
 
-    def show(self, lifelist_id, observation_id=None, species_name=None):
+    def show(self, lifelist_id=None, observation_id=None, species_name=None, **kwargs):
         """
         Display the observation form for adding or editing an observation
 
@@ -56,18 +57,28 @@ class ObservationForm:
             lifelist_id: ID of the lifelist
             observation_id: ID of the observation to edit, or None for a new observation
             species_name: Optional species name to pre-fill
+            **kwargs: Additional arguments
         """
+        # Use current lifelist_id if not provided
+        if lifelist_id is None:
+            lifelist_id = self.app_state.get_current_lifelist_id()
+
+        if lifelist_id is None:
+            # No lifelist selected
+            messagebox.showerror("Error", "No lifelist selected")
+            return
+
         self.current_observation_id = observation_id
         self.current_lifelist_id = lifelist_id
         self.photos = []
         self.current_tags = []
 
         # Clear the content area
-        for widget in self.content.winfo_children():
+        for widget in self.content_frame.winfo_children():
             widget.destroy()
 
         # Create the form container
-        form_container = ctk.CTkFrame(self.content)
+        form_container = ctk.CTkFrame(self.content_frame)
         form_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # Create scroll canvas
@@ -143,7 +154,7 @@ class ObservationForm:
             species_frame,
             text="Manage",
             width=70,
-            command=self.app.taxonomy_manager.show_dialog
+            command=self.controller.show_taxonomy_manager
         )
         taxonomy_btn.pack(side=tk.LEFT, padx=5)
 
@@ -316,7 +327,7 @@ class ObservationForm:
             text="Cancel",
             fg_color="gray40",
             hover_color="gray30",
-            command=lambda: self.app.open_lifelist(self.app.current_lifelist_id, self.app.get_lifelist_name())
+            command=lambda: self.controller.open_lifelist(self.current_lifelist_id)
         )
         cancel_btn.pack(side=tk.LEFT, padx=5)
 
@@ -547,7 +558,9 @@ class ObservationForm:
             if photo["thumbnail"]:
                 thumbnail_label = ctk.CTkLabel(photo_frame, text="", image=photo["thumbnail"])
                 thumbnail_label.pack(padx=5, pady=5)
-                thumbnail_label.image = photo["thumbnail"]  # Keep a reference
+                # Keep a reference to prevent garbage collection
+                photo["thumbnail_label"] = thumbnail_label
+
             else:
                 thumbnail_label = ctk.CTkLabel(photo_frame, text="No Thumbnail")
                 thumbnail_label.pack(padx=5, pady=5)
@@ -791,8 +804,8 @@ class ObservationForm:
 
             self.db.conn.commit()
 
-            # Reload the lifelist view
-            self.app.open_lifelist(self.current_lifelist_id, self.app.get_lifelist_name())
+            # Return to lifelist view
+            self.controller.open_lifelist(self.current_lifelist_id)
 
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
@@ -812,6 +825,6 @@ class ObservationForm:
 
             if success:
                 # Return to the lifelist view
-                self.app.open_lifelist(self.current_lifelist_id, self.app.get_lifelist_name())
+                self.controller.open_lifelist(self.current_lifelist_id)
             else:
                 messagebox.showerror("Error", "Failed to delete the observation")

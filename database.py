@@ -4,9 +4,7 @@ Database module - Manages all database operations for the Lifelist Manager
 import os
 import json
 import sqlite3
-import re
 import shutil
-from datetime import datetime
 
 class Database:
     def __init__(self, db_path="lifelists.db"):
@@ -15,6 +13,15 @@ class Database:
         self.conn = sqlite3.connect(db_path)
         self.cursor = self.conn.cursor()
         self.create_tables()
+
+    def __enter__(self):
+        """Support for using as a context manager"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Clean up resources when exiting the context"""
+        self.close()
+        return False  # Don't suppress exceptions
 
     def create_tables(self):
         """Create all database tables if they don't exist"""
@@ -366,15 +373,15 @@ class Database:
         try:
             import csv
 
-            # Read the CSV file
+            # Begin a transaction for better performance
+            self.conn.execute("BEGIN TRANSACTION")
+
+            # Track the number of entries added
+            count = 0
+
+            # Read the CSV file with context manager
             with open(csv_file, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
-
-                # Track the number of entries added
-                count = 0
-
-                # Begin a transaction for better performance
-                self.conn.execute("BEGIN TRANSACTION")
 
                 # Process each row
                 for row in reader:
@@ -422,10 +429,10 @@ class Database:
 
                         count += 1
 
-                # Commit the transaction
-                self.conn.commit()
+            # Commit the transaction
+            self.conn.commit()
+            return count
 
-                return count
         except Exception as e:
             self.conn.rollback()
             print(f"Error importing taxonomy from CSV: {e}")
@@ -861,7 +868,7 @@ class Database:
 
                 lifelist_data["observations"].append(obs_data)
 
-            # Write the JSON file
+            # Write the JSON file using context manager
             with open(os.path.join(export_path, f"{lifelist_data['name']}.json"), 'w') as f:
                 json.dump(lifelist_data, f, indent=2)
 
@@ -873,6 +880,7 @@ class Database:
     def import_lifelist(self, json_path, photos_dir=None):
         """Import a lifelist from a JSON file"""
         try:
+            # Use context manager for file operations
             with open(json_path, 'r') as f:
                 lifelist_data = json.load(f)
 
@@ -955,4 +963,5 @@ class Database:
 
     def close(self):
         """Close the database connection"""
-        self.conn.close()
+        if self.conn:
+            self.conn.close()

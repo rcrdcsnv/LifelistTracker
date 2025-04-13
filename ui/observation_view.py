@@ -3,8 +3,9 @@ Observation view - Display observation details
 """
 import tkinter as tk
 import customtkinter as ctk
-from PIL import Image, ImageTk
+
 from ui.utils import create_scrollable_container
+from models.photo_utils import PhotoUtils
 
 
 class ObservationView:
@@ -12,32 +13,59 @@ class ObservationView:
     UI Component for displaying observation details
     """
 
-    def __init__(self, app, db, content_frame):
+    def __init__(self, controller, app_state, db, content_frame):
         """
         Initialize the observation view
 
         Args:
-            app: Main application reference
+            controller: Navigation controller
+            app_state: Application state manager
             db: Database connection
             content_frame: Content frame for displaying observation
         """
-        self.app = app
+        self.controller = controller
+        self.app_state = app_state
         self.db = db
-        self.content = content_frame
+        self.content_frame = content_frame
+        self.photo_images = []  # Keep references to PhotoImage objects
 
-    def show(self, observation_id):
+    def show(self, observation_id=None, **kwargs):
         """
         Display details for an observation
 
         Args:
+            observation_id: ID of the observation to display (optional)
+            **kwargs: Additional keyword arguments
+        """
+        # Use current observation_id if not provided
+        if observation_id is None:
+            observation_id = self.app_state.get_current_observation_id()
+
+        if observation_id is None:
+            # No observation to display
+            return
+
+        self.display_observation(observation_id)
+
+    def display_observation(self, observation_id):
+        """
+        Display an observation
+
+        Args:
             observation_id: ID of the observation to display
         """
+        # Update application state
+        self.app_state.set_current_observation(observation_id)
+
+        # Clear photo references
+        self.photo_images = []
+
         # Clear the content area
-        for widget in self.content.winfo_children():
+        for widget in self.content_frame.winfo_children():
             widget.destroy()
 
         # Create the detail container
-        detail_container = ctk.CTkFrame(self.content)
+        detail_container = ctk.CTkFrame(self.content_frame)
         detail_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # Create scroll canvas
@@ -57,7 +85,7 @@ class ObservationView:
             back_btn = ctk.CTkButton(
                 detail_frame,
                 text="Back to Lifelist",
-                command=lambda: self.app.open_lifelist(self.app.current_lifelist_id, self.app.get_lifelist_name())
+                command=lambda: self.controller.open_lifelist(self.app_state.get_current_lifelist_id())
             )
             back_btn.pack(pady=10)
             return
@@ -116,13 +144,13 @@ class ObservationView:
 
         if primary_photo:
             try:
-                img = Image.open(primary_photo[1])
-                img.thumbnail((600, 400))  # Resize while maintaining aspect ratio
-                photo_img = ImageTk.PhotoImage(img)
+                # Use PhotoUtils with context manager
+                photo_img = PhotoUtils.resize_image_for_thumbnail(primary_photo[1], (600, 400))
 
-                photo_label = ctk.CTkLabel(photos_frame, text="", image=photo_img)
-                photo_label.pack(pady=10)
-                photo_label.image = photo_img  # Keep a reference
+                if photo_img:
+                    photo_label = ctk.CTkLabel(photos_frame, text="", image=photo_img)
+                    photo_label.pack(pady=10)
+                    self.photo_images.append(photo_img)  # Keep a reference
             except Exception as e:
                 print(f"Error loading primary photo: {e}")
 
@@ -133,21 +161,20 @@ class ObservationView:
 
             for photo in photos:
                 try:
-                    img = Image.open(photo[1])
-                    img.thumbnail((80, 80))
-                    thumbnail = ImageTk.PhotoImage(img)
+                    thumbnail = PhotoUtils.resize_image_for_thumbnail(photo[1], (80, 80))
 
-                    thumb_frame = ctk.CTkFrame(thumbnails_frame)
-                    thumb_frame.pack(side=tk.LEFT, padx=5)
+                    if thumbnail:
+                        thumb_frame = ctk.CTkFrame(thumbnails_frame)
+                        thumb_frame.pack(side=tk.LEFT, padx=5)
 
-                    thumb_label = ctk.CTkLabel(thumb_frame, text="", image=thumbnail)
-                    thumb_label.pack(padx=5, pady=5)
-                    thumb_label.image = thumbnail  # Keep a reference
+                        thumb_label = ctk.CTkLabel(thumb_frame, text="", image=thumbnail)
+                        thumb_label.pack(padx=5, pady=5)
+                        self.photo_images.append(thumbnail)  # Keep a reference
 
-                    # Add a primary indicator if this is the primary photo
-                    if photo[2]:  # is_primary
-                        primary_label = ctk.CTkLabel(thumb_frame, text="Primary", font=ctk.CTkFont(size=10))
-                        primary_label.pack(pady=2)
+                        # Add a primary indicator if this is the primary photo
+                        if photo[2]:  # is_primary
+                            primary_label = ctk.CTkLabel(thumb_frame, text="Primary", font=ctk.CTkFont(size=10))
+                            primary_label.pack(pady=2)
                 except Exception as e:
                     print(f"Error creating thumbnail: {e}")
 
@@ -287,13 +314,23 @@ class ObservationView:
         back_btn = ctk.CTkButton(
             buttons_frame,
             text="Back to Lifelist",
-            command=lambda: self.app.open_lifelist(self.app.current_lifelist_id, self.app.get_lifelist_name())
+            command=lambda: self.controller.open_lifelist(self.app_state.get_current_lifelist_id())
         )
         back_btn.pack(side=tk.LEFT, padx=5)
 
         edit_btn = ctk.CTkButton(
             buttons_frame,
             text="Edit Observation",
-            command=lambda: self.app.observation_form.show(self.app.current_lifelist_id, observation_id)
+            command=lambda: self.edit_observation(observation_id)
         )
         edit_btn.pack(side=tk.RIGHT, padx=5)
+
+    def edit_observation(self, observation_id):
+        """
+        Edit an observation
+
+        Args:
+            observation_id: ID of the observation to edit
+        """
+        lifelist_id = self.app_state.get_current_lifelist_id()
+        self.controller.show_observation_form(lifelist_id=lifelist_id, observation_id=observation_id)

@@ -7,10 +7,9 @@ from tkinter import filedialog, messagebox
 import threading
 import tempfile
 import requests
-import os
-import csv
-import json
+from os import path
 from ui.utils import center_window
+from file_utils import FileUtils
 
 
 class TaxonomyManager:
@@ -18,18 +17,19 @@ class TaxonomyManager:
     UI Component for managing taxonomies
     """
 
-    def __init__(self, app, db, root):
+    def __init__(self, controller, db, root):
         """
         Initialize the taxonomy manager
 
         Args:
-            app: Main application reference
+            controller: Navigation controller
             db: Database connection
             root: Root window
         """
-        self.app = app
+        self.controller = controller
         self.db = db
         self.root = root
+        self.app_state = controller.app_state if hasattr(controller, 'app_state') else None
 
         # Dictionary of standard taxonomy download endpoints and mapping information
         self.taxonomy_endpoints = {
@@ -122,7 +122,9 @@ class TaxonomyManager:
 
     def show_dialog(self):
         """Show the taxonomy management dialog"""
-        if not self.app.current_lifelist_id:
+        lifelist_id = self.app_state.get_current_lifelist_id() if self.app_state else None
+
+        if not lifelist_id:
             messagebox.showerror("Error", "No lifelist selected")
             return
 
@@ -147,13 +149,13 @@ class TaxonomyManager:
         tabview.set("My Taxonomies")
 
         # My Taxonomies tab
-        self._create_taxonomies_tab(taxonomies_tab, dialog)
+        self._create_taxonomies_tab(taxonomies_tab, dialog, lifelist_id)
 
         # Import Taxonomy tab
-        self._create_import_tab(import_tab, dialog)
+        self._create_import_tab(import_tab, dialog, lifelist_id)
 
         # Download Standard Taxonomies tab
-        self._create_download_tab(download_tab)
+        self._create_download_tab(download_tab, lifelist_id)
 
         # Bottom buttons
         btn_frame = ctk.CTkFrame(dialog)
@@ -166,19 +168,20 @@ class TaxonomyManager:
         )
         close_btn.pack(side=tk.RIGHT, padx=5)
 
-    def _create_taxonomies_tab(self, parent, dialog):
+    def _create_taxonomies_tab(self, parent, dialog, lifelist_id):
         """
         Create the My Taxonomies tab
 
         Args:
             parent: Tab widget
             dialog: Dialog window
+            lifelist_id: Current lifelist ID
         """
         taxonomies_frame = ctk.CTkFrame(parent)
         taxonomies_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # Get current taxonomies
-        taxonomies = self.db.get_taxonomies(self.app.current_lifelist_id)
+        taxonomies = self.db.get_taxonomies(lifelist_id)
 
         if taxonomies:
             # Create a list of taxonomies
@@ -222,7 +225,7 @@ class TaxonomyManager:
                         actions_frame,
                         text="Set Active",
                         width=80,
-                        command=lambda t_id=tax_id: self._activate_taxonomy(t_id, dialog)
+                        command=lambda t_id=tax_id, lid=lifelist_id: self._activate_taxonomy(t_id, lid, dialog)
                     )
                     activate_btn.pack(side=tk.LEFT, padx=2)
 
@@ -232,7 +235,7 @@ class TaxonomyManager:
                     width=70,
                     fg_color="red3",
                     hover_color="red4",
-                    command=lambda t_id=tax_id: self._delete_taxonomy(t_id, dialog)
+                    command=lambda t_id=tax_id, lid=lifelist_id: self._delete_taxonomy(t_id, lid, dialog)
                 )
                 delete_btn.pack(side=tk.LEFT, padx=2)
         else:
@@ -244,27 +247,29 @@ class TaxonomyManager:
             )
             no_tax_label.pack(pady=50)
 
-    def _activate_taxonomy(self, taxonomy_id, dialog):
+    def _activate_taxonomy(self, taxonomy_id, lifelist_id, dialog):
         """
         Activate a taxonomy
 
         Args:
             taxonomy_id: ID of the taxonomy to activate
+            lifelist_id: ID of the lifelist
             dialog: Dialog window to close after activation
         """
-        if self.db.set_active_taxonomy(taxonomy_id, self.app.current_lifelist_id):
+        if self.db.set_active_taxonomy(taxonomy_id, lifelist_id):
             messagebox.showinfo("Success", "Taxonomy activated successfully")
             dialog.destroy()
             self.show_dialog()  # Reopen with updated info
         else:
             messagebox.showerror("Error", "Failed to activate taxonomy")
 
-    def _delete_taxonomy(self, taxonomy_id, dialog):
+    def _delete_taxonomy(self, taxonomy_id, lifelist_id, dialog):
         """
         Delete a taxonomy
 
         Args:
             taxonomy_id: ID of the taxonomy to delete
+            lifelist_id: ID of the lifelist
             dialog: Dialog window to close after deletion
         """
         confirm = messagebox.askyesno(
@@ -279,13 +284,14 @@ class TaxonomyManager:
             dialog.destroy()
             self.show_dialog()  # Reopen with updated info
 
-    def _create_import_tab(self, parent, dialog):
+    def _create_import_tab(self, parent, dialog, lifelist_id):
         """
         Create the Import Taxonomy tab
 
         Args:
             parent: Tab widget
             dialog: Dialog window
+            lifelist_id: Current lifelist ID
         """
         import_frame = ctk.CTkFrame(parent)
         import_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -415,9 +421,9 @@ class TaxonomyManager:
                 # Try to read headers if it's a CSV
                 if file.lower().endswith('.csv'):
                     try:
-                        with open(file, 'r', encoding='utf-8') as f:
-                            reader = csv.reader(f)
-                            headers = next(reader)
+                        # Use FileUtils instead of direct file operations
+                        rows, headers = FileUtils.read_csv_rows(file)
+                        if headers:
                             preview_headers(headers)
                     except Exception as e:
                         messagebox.showerror("Error", f"Failed to read CSV headers: {e}")
@@ -429,16 +435,17 @@ class TaxonomyManager:
         import_btn = ctk.CTkButton(
             import_frame,
             text="Import Taxonomy",
-            command=lambda: self._import_taxonomy(name_entry, version_entry, source_entry,
+            command=lambda: self._import_taxonomy(lifelist_id, name_entry, version_entry, source_entry,
                                                   file_path_var, field_mappings, dialog)
         )
         import_btn.pack(pady=15)
 
-    def _import_taxonomy(self, name_entry, version_entry, source_entry, file_path_var, field_mappings, dialog):
+    def _import_taxonomy(self, lifelist_id, name_entry, version_entry, source_entry, file_path_var, field_mappings, dialog):
         """
         Import a taxonomy from a file
 
         Args:
+            lifelist_id: ID of the lifelist
             name_entry: Taxonomy name entry widget
             version_entry: Version entry widget
             source_entry: Source entry widget
@@ -453,7 +460,7 @@ class TaxonomyManager:
             return
 
         file_path = file_path_var.get()
-        if not file_path or not os.path.exists(file_path):
+        if not file_path or not path.exists(file_path):
             messagebox.showerror("Error", "Please select a valid file")
             return
 
@@ -463,7 +470,7 @@ class TaxonomyManager:
 
         # Create the taxonomy
         taxonomy_id = self.db.add_taxonomy(
-            self.app.current_lifelist_id,
+            lifelist_id,
             name,
             version_entry.get().strip() or None,
             source_entry.get().strip() or None
@@ -480,20 +487,21 @@ class TaxonomyManager:
             messagebox.showinfo("Success", f"Successfully imported {count} taxonomy entries")
 
             # Set this as the active taxonomy if it's the first one
-            if not self.db.get_active_taxonomy(self.app.current_lifelist_id):
-                self.db.set_active_taxonomy(taxonomy_id, self.app.current_lifelist_id)
+            if not self.db.get_active_taxonomy(lifelist_id):
+                self.db.set_active_taxonomy(taxonomy_id, lifelist_id)
 
             dialog.destroy()
             self.show_dialog()  # Reopen with updated info
         else:
             messagebox.showerror("Error", "Failed to import taxonomy data")
 
-    def _create_download_tab(self, parent):
+    def _create_download_tab(self, parent, lifelist_id):
         """
         Create the Download Standard Taxonomies tab
 
         Args:
             parent: Tab widget
+            lifelist_id: Current lifelist ID
         """
         download_frame = ctk.CTkFrame(parent)
         download_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -555,16 +563,17 @@ class TaxonomyManager:
                 btn_frame,
                 text="Download & Import",
                 width=120,
-                command=lambda t=tax: self.download_standard_taxonomy(t)
+                command=lambda t=tax, lid=lifelist_id: self.download_standard_taxonomy(t, lid)
             )
             download_btn.pack(side=tk.RIGHT, padx=5)
 
-    def download_standard_taxonomy(self, taxonomy_info):
+    def download_standard_taxonomy(self, taxonomy_info, lifelist_id):
         """
         Download and import a standard taxonomy
 
         Args:
             taxonomy_info: Dictionary with taxonomy information
+            lifelist_id: ID of the lifelist
         """
         dialog = ctk.CTkToplevel(self.root)
         dialog.title(f"Downloading {taxonomy_info['name']}")
@@ -646,7 +655,7 @@ class TaxonomyManager:
                 # Process the downloaded CSV
                 # Create the taxonomy
                 taxonomy_id = self.db.add_taxonomy(
-                    self.app.current_lifelist_id,
+                    lifelist_id,
                     taxonomy_info["name"],
                     version=taxonomy_info.get("version", ""),
                     source=taxonomy_info.get("url", ""),
@@ -662,12 +671,12 @@ class TaxonomyManager:
                 count = self.db.import_csv_taxonomy(taxonomy_id, temp_file_path, endpoint_info["mapping"])
 
                 # Set as active taxonomy if it's the first one
-                if not self.db.get_active_taxonomy(self.app.current_lifelist_id):
-                    self.db.set_active_taxonomy(taxonomy_id, self.app.current_lifelist_id)
+                if not self.db.get_active_taxonomy(lifelist_id):
+                    self.db.set_active_taxonomy(taxonomy_id, lifelist_id)
 
                 # Clean up the temporary file
                 try:
-                    os.unlink(temp_file_path)
+                    FileUtils.delete_file(temp_file_path)
                 except:
                     pass
 
