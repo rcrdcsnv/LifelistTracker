@@ -3,6 +3,8 @@ AppState - Manages application state and provides centralized access to state da
 """
 from typing import Optional, Callable
 
+from database_factory import DatabaseFactory
+
 
 class AppState:
     """
@@ -34,7 +36,7 @@ class AppState:
         if not self.current_lifelist_id:
             return ""
 
-        with self.db as db:
+        with DatabaseFactory.get_database() as db:
             db.cursor.execute("SELECT name FROM lifelists WHERE id = ?", (self.current_lifelist_id,))
             result = db.cursor.fetchone()
 

@@ -63,7 +63,7 @@ class NavigationController:
         view_info = self.views[view_name]
         if view_info['instance'] is None:
             # Create instance with appropriate dependencies
-            view_kwargs = view_info['kwargs'].copy()
+            view_kwargs = view_info['kwargs'].copy() if 'kwargs' in view_info else {}
             view_kwargs.update({
                 'controller': self,
                 'app_state': self.app_state,
