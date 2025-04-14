@@ -7,6 +7,7 @@ from tkinter import filedialog, messagebox
 from os import path
 import re
 
+from database_factory import DatabaseFactory
 from file_utils import FileUtils
 
 
@@ -136,17 +137,23 @@ def export_lifelist_dialog(root, db, lifelist_id, lifelist_name):
         "Export Photos?",
         "Would you like to include photos in the export? This may increase the export size significantly."
     )
+    try:
+        if isinstance(db, DatabaseFactory):
+            db = DatabaseFactory.get_database()
 
-    # Export the lifelist
-    success = db.export_lifelist(lifelist_id, export_path, include_photos)
+        # Export the lifelist
+        success = db.export_lifelist(lifelist_id, export_path, include_photos)
 
-    if success:
-        show_message(
-            "Export Successful",
-            f"Lifelist '{lifelist_name}' has been exported to:\n{export_path}"
-        )
-    else:
-        show_message("Export Error", f"Failed to export lifelist '{lifelist_name}'", "error")
+        if success:
+            show_message(
+                "Export Successful",
+                f"Lifelist '{lifelist_name}' has been exported to:\n{export_path}"
+            )
+        else:
+            show_message("Export Error", f"Failed to export lifelist '{lifelist_name}'", "error")
+
+    except Exception as e:
+        show_message("Export Error", f"An error occurred: {str(e)}", "error")
 
 
 def import_lifelist_dialog(root, db, callback):
@@ -181,16 +188,23 @@ def import_lifelist_dialog(root, db, callback):
         if include_photos:
             photos_dir = potential_photos_dir
 
-    # Import the lifelist
-    success, message = db.import_lifelist(json_file, photos_dir)
+    try:
+        if isinstance(db, DatabaseFactory):
+            db = DatabaseFactory.get_database()
 
-    if success:
-        show_message("Import Successful", message)
-        # Refresh sidebar
-        if callback:
-            callback()
-    else:
-        show_message("Import Error", message, "error")
+        # Import the lifelist
+        success, message = db.import_lifelist(json_file, photos_dir)
+
+        if success:
+            show_message("Import Successful", message)
+            # Refresh sidebar
+            if callback:
+                callback()
+        else:
+            show_message("Import Error", message, "error")
+
+    except Exception as e:
+        show_message("Import Error", f"An error occurred: {str(e)}", "error")
 
 
 def create_action_button(parent, text, command, width=70, side=tk.LEFT, padx=2):

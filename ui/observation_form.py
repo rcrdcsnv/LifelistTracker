@@ -4,6 +4,8 @@ Observation form - Add and edit observations
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+
+from database_factory import DatabaseFactory
 from models.photo_utils import PhotoUtils
 from ui.utils import create_scrollable_container, create_labeled_entry
 
@@ -593,7 +595,8 @@ class ObservationForm:
         Args:
             observation_id: ID of the observation to load
         """
-        observation, custom_field_values, obs_tags = self.db.get_observation_details(observation_id)
+        db = DatabaseFactory.get_database()
+        observation, custom_field_values, obs_tags = db.get_observation_details(observation_id)
 
         if observation:
             self.species_entry.insert(0, observation[2] or "")  # species_name
@@ -664,7 +667,7 @@ class ObservationForm:
         return True
 
     def _save_observation(self):
-        """Save the observation"""
+        """Save the observation using proper transaction management"""
         if not self._validate_fields():
             return
 
@@ -693,107 +696,115 @@ class ObservationForm:
                 return
 
         try:
-            if self.current_observation_id:
-                # Update existing observation
-                success = self.db.update_observation(
-                    self.current_observation_id,
-                    species,
-                    observation_date,
-                    location,
-                    latitude,
-                    longitude,
-                    tier,
-                    notes
-                )
+            # Get database connection (without context manager)
+            db = DatabaseFactory.get_database()
 
-                if not success:
-                    messagebox.showerror("Error", "Failed to update observation")
-                    return
+            # Define all operations to perform in the transaction
+            def save_operations():
+                species_primary_set = False
 
-                obs_id = self.current_observation_id
-
-                # For existing observations, get current photos and remove ones that are no longer in the UI
-                current_photos = self.db.get_photos(obs_id)
-                current_photo_ids = set(photo[0] for photo in current_photos)
-                kept_photo_ids = set(photo.get("id") for photo in self.photos if "id" in photo)
-
-                # Photos to delete = current photos that aren't in the kept photos list
-                photos_to_delete = current_photo_ids - kept_photo_ids
-
-                # Delete each photo that was removed
-                for photo_id in photos_to_delete:
-                    self.db.delete_photo(photo_id)
-
-            else:
-                # Create new observation
-                obs_id = self.db.add_observation(
-                    self.current_lifelist_id,
-                    species,
-                    observation_date,
-                    location,
-                    latitude,
-                    longitude,
-                    tier,
-                    notes
-                )
-
-                if not obs_id:
-                    messagebox.showerror("Error", "Failed to add observation")
-                    return
-
-            # Save custom field values
-            for field_id, field_entry in self.custom_field_entries.items():
-                if isinstance(field_entry, ctk.CTkCheckBox):
-                    value = "1" if field_entry.get() else "0"
-                else:
-                    value = field_entry.get().strip()
-
-                # Delete any existing values
-                self.db.cursor.execute(
-                    "DELETE FROM observation_custom_fields WHERE observation_id = ? AND field_id = ?",
-                    (obs_id, field_id)
-                )
-
-                # Insert new value
-                if value:
-                    self.db.cursor.execute(
-                        "INSERT INTO observation_custom_fields (observation_id, field_id, value) VALUES (?, ?, ?)",
-                        (obs_id, field_id, value)
+                if self.current_observation_id:
+                    # Update existing observation
+                    success = db.update_observation(
+                        self.current_observation_id,
+                        species,
+                        observation_date,
+                        location,
+                        latitude,
+                        longitude,
+                        tier,
+                        notes
                     )
 
-            # Save tags
-            # First, remove all existing tags for this observation
-            self.db.cursor.execute(
-                "DELETE FROM observation_tags WHERE observation_id = ?",
-                (obs_id,)
-            )
+                    if not success:
+                        raise Exception("Failed to update observation")
 
-            # Add the current tags
-            for tag_name in self.current_tags:
-                tag_id = self.db.add_tag(tag_name)
-                self.db.add_tag_to_observation(obs_id, tag_id)
+                    obs_id = self.current_observation_id
 
-            # Save photos
-            species_primary_set = False
-            for photo in self.photos:
-                if photo.get("is_primary", False):
-                    species_primary_set = True
+                    # For existing observations, get current photos and remove ones that are no longer in the UI
+                    current_photos = db.get_photos(obs_id)
+                    current_photo_ids = set(photo[0] for photo in current_photos)
+                    kept_photo_ids = set(photo.get("id") for photo in self.photos if "id" in photo)
 
-                # New or existing photo handling
-                if "id" not in photo:
-                    # New photo
-                    self.db.add_photo(
-                        obs_id,
-                        photo["path"],
-                        1 if photo["is_primary"] else 0,
-                        photo.get("latitude"),
-                        photo.get("longitude"),
-                        photo.get("taken_date")
-                    )
+                    # Photos to delete = current photos that aren't in the kept photos list
+                    photos_to_delete = current_photo_ids - kept_photo_ids
+
+                    # Delete each photo that was removed
+                    for photo_id in photos_to_delete:
+                        db.delete_photo(photo_id)
                 else:
-                    # Update existing photo's primary status if needed
-                    if photo["is_primary"]:
-                        self.db.set_primary_photo(photo["id"], obs_id)
+                    # Create new observation
+                    obs_id = db.add_observation(
+                        self.current_lifelist_id,
+                        species,
+                        observation_date,
+                        location,
+                        latitude,
+                        longitude,
+                        tier,
+                        notes
+                    )
+
+                    if not obs_id:
+                        raise Exception("Failed to add observation")
+
+                # Save custom field values
+                for field_id, field_entry in self.custom_field_entries.items():
+                    if isinstance(field_entry, ctk.CTkCheckBox):
+                        value = "1" if field_entry.get() else "0"
+                    else:
+                        value = field_entry.get().strip()
+
+                    # Delete any existing values
+                    db.cursor.execute(
+                        "DELETE FROM observation_custom_fields WHERE observation_id = ? AND field_id = ?",
+                        (obs_id, field_id)
+                    )
+
+                    # Insert new value
+                    if value:
+                        db.cursor.execute(
+                            "INSERT INTO observation_custom_fields (observation_id, field_id, value) VALUES (?, ?, ?)",
+                            (obs_id, field_id, value)
+                        )
+
+                # Save tags
+                # First, remove all existing tags for this observation
+                db.cursor.execute(
+                    "DELETE FROM observation_tags WHERE observation_id = ?",
+                    (obs_id,)
+                )
+
+                # Add the current tags
+                for tag_name in self.current_tags:
+                    tag_id = db.add_tag(tag_name)
+                    db.add_tag_to_observation(obs_id, tag_id)
+
+                # Save photos
+                for photo in self.photos:
+                    if photo.get("is_primary", False):
+                        species_primary_set = True
+
+                    # New or existing photo handling
+                    if "id" not in photo:
+                        # New photo
+                        db.add_photo(
+                            obs_id,
+                            photo["path"],
+                            1 if photo["is_primary"] else 0,
+                            photo.get("latitude"),
+                            photo.get("longitude"),
+                            photo.get("taken_date")
+                        )
+                    else:
+                        # Update existing photo's primary status if needed
+                        if photo["is_primary"]:
+                            db.set_primary_photo(photo["id"], obs_id)
+
+                return species_primary_set
+
+            # Execute all operations as a single transaction
+            species_primary_set = db.execute_transaction(save_operations)
 
             # Provide feedback only once if any photo was set as primary
             if species_primary_set:
@@ -801,8 +812,6 @@ class ObservationForm:
                     "Primary Photo Updated",
                     "The selected primary photo will now appear for all observations of this species."
                 )
-
-            self.db.conn.commit()
 
             # Return to lifelist view
             self.controller.open_lifelist(self.current_lifelist_id)
@@ -821,10 +830,22 @@ class ObservationForm:
         )
 
         if confirm:
-            success, photos = self.db.delete_observation(self.current_observation_id)
+            try:
+                # Get database without context manager
+                db = DatabaseFactory.get_database()
 
-            if success:
-                # Return to the lifelist view
-                self.controller.open_lifelist(self.current_lifelist_id)
-            else:
-                messagebox.showerror("Error", "Failed to delete the observation")
+                # Execute deletion in a transaction
+                result = db.execute_transaction(
+                    lambda: db.delete_observation(self.current_observation_id)
+                )
+
+                success, photos = result
+
+                if success:
+                    # Return to the lifelist view
+                    self.controller.open_lifelist(self.current_lifelist_id)
+                else:
+                    messagebox.showerror("Error", "Failed to delete the observation")
+
+            except Exception as e:
+                messagebox.showerror("Error", f"An error occurred: {str(e)}")

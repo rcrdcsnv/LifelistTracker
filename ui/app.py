@@ -2,6 +2,8 @@
 Main application module - Manages application state and UI components
 """
 import tkinter as tk
+from tkinter import messagebox
+
 import customtkinter as ctk
 
 from database_factory import DatabaseFactory
@@ -136,30 +138,23 @@ class LifelistApp:
 
     def show_create_lifelist_dialog(self):
         """Show dialog to create a new lifelist"""
-        # Force the lifelist view to be instantiated if it hasn't been yet
-        if 'lifelist_view' in self.nav_controller.views:
-            view_info = self.nav_controller.views['lifelist_view']
-            if view_info['instance'] is None:
-                # We need to instantiate the view first
-                view_kwargs = view_info['kwargs'].copy()
-                view_kwargs.update({
-                    'controller': self.nav_controller,
-                    'app_state': self.app_state,
-                    'db': self.db,
-                    'content_frame': self.content
-                })
-                view_info['instance'] = view_info['class'](**view_kwargs)
-
-            # Now call the method
-            view_info['instance'].show_create_lifelist_dialog()
+        try:
+            # Get the lifelist view instance, initializing if needed
+            lifelist_view = self.nav_controller.get_view('lifelist_view')
+            lifelist_view.show_create_lifelist_dialog()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open create lifelist dialog: {str(e)}")
 
     def delete_current_lifelist(self):
         """Delete the current lifelist"""
-        if 'lifelist_view' in self.nav_controller.views:
-            view_info = self.nav_controller.views['lifelist_view']
-            if view_info['instance']:
-                lifelist_id = self.app_state.get_current_lifelist_id()
-                view_info['instance'].delete_lifelist(lifelist_id)
+        try:
+            lifelist_id = self.app_state.get_current_lifelist_id()
+            if lifelist_id:
+                # Get the lifelist view instance, initializing if needed
+                lifelist_view = self.nav_controller.get_view('lifelist_view')
+                lifelist_view.delete_lifelist(lifelist_id)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete lifelist: {str(e)}")
 
     def import_lifelist(self):
         """Import a lifelist from file"""

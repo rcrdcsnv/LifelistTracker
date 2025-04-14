@@ -250,42 +250,49 @@ class TaxonomyManager:
             no_tax_label.pack(pady=50)
 
     def _activate_taxonomy(self, taxonomy_id, lifelist_id, dialog):
-        """
-        Activate a taxonomy
+        """Activate a taxonomy"""
+        try:
+            db = DatabaseFactory.get_database()
 
-        Args:
-            taxonomy_id: ID of the taxonomy to activate
-            lifelist_id: ID of the lifelist
-            dialog: Dialog window to close after activation
-        """
-        if self.db.set_active_taxonomy(taxonomy_id, lifelist_id):
-            messagebox.showinfo("Success", "Taxonomy activated successfully")
-            dialog.destroy()
-            self.show_dialog()  # Reopen with updated info
-        else:
-            messagebox.showerror("Error", "Failed to activate taxonomy")
+            # Execute activation in a transaction
+            success = db.execute_transaction(
+                lambda: db.set_active_taxonomy(taxonomy_id, lifelist_id)
+            )
+
+            if success:
+                messagebox.showinfo("Success", "Taxonomy activated successfully")
+                dialog.destroy()
+                self.show_dialog()  # Reopen with updated info
+            else:
+                messagebox.showerror("Error", "Failed to activate taxonomy")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
     def _delete_taxonomy(self, taxonomy_id, lifelist_id, dialog):
-        """
-        Delete a taxonomy
-
-        Args:
-            taxonomy_id: ID of the taxonomy to delete
-            lifelist_id: ID of the lifelist
-            dialog: Dialog window to close after deletion
-        """
+        """Delete a taxonomy"""
         confirm = messagebox.askyesno(
             "Confirm Delete",
             "Are you sure you want to delete this taxonomy? This cannot be undone."
         )
 
         if confirm:
-            with DatabaseFactory.get_database() as db:
-                db.cursor.execute("DELETE FROM taxonomies WHERE id = ?", (taxonomy_id,))
-                db.conn.commit()
-            messagebox.showinfo("Success", "Taxonomy deleted successfully")
-            dialog.destroy()
-            self.show_dialog()  # Reopen with updated info
+            try:
+                # Get database without context manager
+                db = DatabaseFactory.get_database()
+
+                # Execute deletion in a transaction
+                success = db.execute_transaction(lambda: {
+                    db.cursor.execute("DELETE FROM taxonomies WHERE id = ?", (taxonomy_id,))
+                })
+
+                if success:
+                    messagebox.showinfo("Success", "Taxonomy deleted successfully")
+                dialog.destroy()
+                self.show_dialog()  # Reopen with updated info
+
+            except Exception as e:
+                messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
     def _create_import_tab(self, parent, dialog, lifelist_id):
         """
@@ -471,32 +478,43 @@ class TaxonomyManager:
             messagebox.showerror("Error", "Scientific Name mapping is required")
             return
 
-        # Create the taxonomy
-        taxonomy_id = self.db.add_taxonomy(
-            lifelist_id,
-            name,
-            version_entry.get().strip() or None,
-            source_entry.get().strip() or None
-        )
+        try:
+            # Get database without context manager
+            db = DatabaseFactory.get_database()
 
-        if not taxonomy_id:
-            messagebox.showerror("Error", "Failed to create taxonomy")
-            return
+            def import_operations():
+                # Create the taxonomy
+                taxonomy_id = db.add_taxonomy(
+                    lifelist_id,
+                    name,
+                    version_entry.get().strip() or None,
+                    source_entry.get().strip() or None
+                )
 
-        # Import the data
-        count = self.db.import_csv_taxonomy(taxonomy_id, file_path, field_mappings)
+                if not taxonomy_id:
+                    raise Exception("Failed to create taxonomy")
 
-        if count >= 0:
-            messagebox.showinfo("Success", f"Successfully imported {count} taxonomy entries")
+                # Import the data
+                count = db.import_csv_taxonomy(taxonomy_id, file_path, field_mappings)
 
-            # Set this as the active taxonomy if it's the first one
-            if not self.db.get_active_taxonomy(lifelist_id):
-                self.db.set_active_taxonomy(taxonomy_id, lifelist_id)
+                # Set this as the active taxonomy if it's the first one
+                if not db.get_active_taxonomy(lifelist_id):
+                    db.set_active_taxonomy(taxonomy_id, lifelist_id)
 
-            dialog.destroy()
-            self.show_dialog()  # Reopen with updated info
-        else:
-            messagebox.showerror("Error", "Failed to import taxonomy data")
+                return count
+
+            # Execute all import operations in a transaction
+            count = db.execute_transaction(import_operations)
+
+            if count >= 0:
+                messagebox.showinfo("Success", f"Successfully imported {count} taxonomy entries")
+                dialog.destroy()
+                self.show_dialog()  # Reopen with updated info
+            else:
+                messagebox.showerror("Error", "Failed to import taxonomy data")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
     def _create_download_tab(self, parent, lifelist_id):
         """
@@ -657,25 +675,32 @@ class TaxonomyManager:
 
                 # Process the downloaded CSV
                 # Create the taxonomy
-                taxonomy_id = self.db.add_taxonomy(
-                    lifelist_id,
-                    taxonomy_info["name"],
-                    version=taxonomy_info.get("version", ""),
-                    source=taxonomy_info.get("url", ""),
-                    description=taxonomy_info.get("description", "")
-                )
+                with DatabaseFactory.get_database() as db:
+                    try:
+                        def import_operations():
+                            # Create the taxonomy
+                            taxonomy_id = db.add_taxonomy(
+                                lifelist_id,
+                                taxonomy_info["name"],
+                                version=taxonomy_info.get("version", ""),
+                                source=taxonomy_info.get("url", ""),
+                                description=taxonomy_info.get("description", "")
+                            )
 
-                if not taxonomy_id:
-                    dialog.after(0, lambda: status_label.configure(text="Error: Failed to create taxonomy"))
-                    dialog.after(0, lambda: info_label.configure(text="Could not add taxonomy to database"))
-                    return
+                            if not taxonomy_id:
+                                raise Exception("Failed to create taxonomy")
 
-                # Import the CSV
-                count = self.db.import_csv_taxonomy(taxonomy_id, temp_file_path, endpoint_info["mapping"])
+                            # Import the CSV
+                            count = db.import_csv_taxonomy(taxonomy_id, temp_file_path, endpoint_info["mapping"])
 
-                # Set as active taxonomy if it's the first one
-                if not self.db.get_active_taxonomy(lifelist_id):
-                    self.db.set_active_taxonomy(taxonomy_id, lifelist_id)
+                            # Set as active taxonomy if it's the first one
+                            if not db.get_active_taxonomy(lifelist_id):
+                                db.set_active_taxonomy(taxonomy_id, lifelist_id)
+
+                            return count
+
+                        count = db.execute_transaction(import_operations)
+                    except: raise Exception("Failed to create taxonomy")
 
                 # Clean up the temporary file
                 try:

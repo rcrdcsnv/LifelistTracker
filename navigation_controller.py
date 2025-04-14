@@ -44,22 +44,11 @@ class NavigationController:
             'kwargs': kwargs
         }
 
-    def show_view(self, view_name: str, **kwargs) -> None:
-        """
-        Show a specific view
-
-        Args:
-            view_name: Name of the view to show
-            **kwargs: Arguments to pass to the view's show method
-        """
+    def _initialize_view_if_needed(self, view_name):
+        """Initialize a view if it hasn't been initialized yet"""
         if view_name not in self.views:
             raise ValueError(f"View '{view_name}' is not registered")
 
-        # Clear the content frame
-        for widget in self.content_frame.winfo_children():
-            widget.destroy()
-
-        # Get or create the view instance
         view_info = self.views[view_name]
         if view_info['instance'] is None:
             # Create instance with appropriate dependencies
@@ -72,8 +61,22 @@ class NavigationController:
             })
             view_info['instance'] = view_info['class'](**view_kwargs)
 
+    def get_view(self, view_name):
+        """Get a view instance, initializing it if necessary"""
+        self._initialize_view_if_needed(view_name)
+        return self.views[view_name]['instance']
+
+    def show_view(self, view_name, **kwargs):
+        """Show a specific view"""
+        # Initialize the view if needed
+        self._initialize_view_if_needed(view_name)
+
+        # Clear the content frame
+        for widget in self.content_frame.winfo_children():
+            widget.destroy()
+
         # Show the view
-        view_instance = view_info['instance']
+        view_instance = self.views[view_name]['instance']
         if hasattr(view_instance, 'show'):
             view_instance.show(**kwargs)
 
