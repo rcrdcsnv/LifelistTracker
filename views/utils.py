@@ -1,3 +1,4 @@
+# views/utils.py
 """
 UI utilities - Common UI functions and dialogs
 """
@@ -6,19 +7,20 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from os import path
 import re
+from typing import Tuple, Callable, Optional
 
-from database_factory import DatabaseFactory
-from file_utils import FileUtils
+from LifelistTracker.services.lifelist_service import ILifelistService
+from LifelistTracker.services.file_service import IFileService
 
 
-def show_message(title, message, message_type="info"):
+def show_message(title: str, message: str, message_type: str = "info") -> None:
     """
     Show a message dialog with the given title and message
 
     Args:
-        title (str): Dialog title
-        message (str): Message to display
-        message_type (str): Type of message - "info", "error", or "warning"
+        title: Dialog title
+        message: Message to display
+        message_type: Type of message - "info", "error", or "warning"
     """
     if message_type == "info":
         messagebox.showinfo(title, message)
@@ -28,7 +30,7 @@ def show_message(title, message, message_type="info"):
         messagebox.showwarning(title, message)
 
 
-def center_window(window):
+def center_window(window) -> None:
     """
     Center a window on the screen
 
@@ -43,7 +45,7 @@ def center_window(window):
     window.geometry(f"{width}x{height}+{x}+{y}")
 
 
-def create_scrollable_container(parent):
+def create_scrollable_container(parent) -> Tuple[tk.Canvas, ctk.CTkFrame]:
     """
     Create a scrollable container
 
@@ -78,15 +80,15 @@ def create_scrollable_container(parent):
     return canvas, inner_frame
 
 
-def create_labeled_entry(parent, label_text, width=300, placeholder_text=""):
+def create_labeled_entry(parent, label_text: str, width: int = 300, placeholder_text: str = "") -> Tuple[ctk.CTkFrame, ctk.CTkEntry]:
     """
     Create a labeled entry field
 
     Args:
         parent: Parent widget
-        label_text (str): Label text
-        width (int): Width of the entry field
-        placeholder_text (str): Placeholder text for the entry
+        label_text: Label text
+        width: Width of the entry field
+        placeholder_text: Placeholder text for the entry
 
     Returns:
         tuple: (frame, entry) where entry is the CTkEntry widget
@@ -103,13 +105,16 @@ def create_labeled_entry(parent, label_text, width=300, placeholder_text=""):
     return frame, entry
 
 
-def export_lifelist_dialog(root, db, lifelist_id, lifelist_name):
+def export_lifelist_dialog(root, lifelist_service: ILifelistService,
+                          file_service: IFileService,
+                          lifelist_id: int, lifelist_name: str) -> None:
     """
     Show dialog to export a lifelist
 
     Args:
         root: Root window
-        db: Database connection
+        lifelist_service: Service for lifelist operations
+        file_service: Service for file operations
         lifelist_id: ID of the lifelist to export
         lifelist_name: Name of the lifelist
     """
@@ -130,19 +135,17 @@ def export_lifelist_dialog(root, db, lifelist_id, lifelist_name):
     export_path = path.join(export_dir, export_name)
 
     # Ensure directory exists
-    FileUtils.ensure_directory(export_path)
+    file_service.ensure_directory(export_path)
 
     # Ask if photos should be included
     include_photos = messagebox.askyesno(
         "Export Photos?",
         "Would you like to include photos in the export? This may increase the export size significantly."
     )
-    try:
-        if isinstance(db, DatabaseFactory):
-            db = DatabaseFactory.get_database()
 
+    try:
         # Export the lifelist
-        success = db.export_lifelist(lifelist_id, export_path, include_photos)
+        success = lifelist_service.export_lifelist(lifelist_id, export_path, include_photos)
 
         if success:
             show_message(
@@ -156,13 +159,16 @@ def export_lifelist_dialog(root, db, lifelist_id, lifelist_name):
         show_message("Export Error", f"An error occurred: {str(e)}", "error")
 
 
-def import_lifelist_dialog(root, db, callback):
+def import_lifelist_dialog(root, lifelist_service: ILifelistService,
+                          file_service: IFileService,
+                          callback: Callable) -> None:
     """
     Show dialog to import a lifelist
 
     Args:
         root: Root window
-        db: Database connection
+        lifelist_service: Service for lifelist operations
+        file_service: Service for file operations
         callback: Function to call after import
     """
     # Ask for JSON file
@@ -189,11 +195,8 @@ def import_lifelist_dialog(root, db, callback):
             photos_dir = potential_photos_dir
 
     try:
-        if isinstance(db, DatabaseFactory):
-            db = DatabaseFactory.get_database()
-
         # Import the lifelist
-        success, message = db.import_lifelist(json_file, photos_dir)
+        success, message = lifelist_service.import_lifelist(json_file, photos_dir)
 
         if success:
             show_message("Import Successful", message)
@@ -207,17 +210,18 @@ def import_lifelist_dialog(root, db, callback):
         show_message("Import Error", f"An error occurred: {str(e)}", "error")
 
 
-def create_action_button(parent, text, command, width=70, side=tk.LEFT, padx=2):
+def create_action_button(parent, text: str, command: Callable, width: int = 70,
+                        side=tk.LEFT, padx: int = 2) -> ctk.CTkButton:
     """
     Create a button for an action
 
     Args:
         parent: Parent widget
-        text (str): Button text
+        text: Button text
         command: Function to call when button is clicked
-        width (int): Button width
+        width: Button width
         side: Side to pack the button on
-        padx (int): Horizontal padding
+        padx: Horizontal padding
 
     Returns:
         CTkButton: The created button
@@ -232,13 +236,13 @@ def create_action_button(parent, text, command, width=70, side=tk.LEFT, padx=2):
     return button
 
 
-def create_tag_widget(parent, tag_name, remove_command=None):
+def create_tag_widget(parent, tag_name: str, remove_command: Optional[Callable] = None) -> ctk.CTkFrame:
     """
     Create a tag widget with optional remove button
 
     Args:
         parent: Parent widget
-        tag_name (str): Name of the tag
+        tag_name: Name of the tag
         remove_command: Function to call when remove button is clicked
 
     Returns:

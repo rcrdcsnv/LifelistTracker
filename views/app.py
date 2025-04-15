@@ -1,21 +1,29 @@
+# views/app.py
 """
 Main application module - Manages application state and UI components
 """
 import tkinter as tk
 from tkinter import messagebox
-
+import atexit
 import customtkinter as ctk
 
-from database_factory import DatabaseFactory
-from ui.welcome_view import WelcomeView
-from ui.lifelist_view import LifelistView
-from ui.observation_form import ObservationForm
-from ui.observation_view import ObservationView
-from ui.taxonomy_manager import TaxonomyManager
-from ui.utils import import_lifelist_dialog, export_lifelist_dialog
-from app_state import AppState
-from navigation_controller import NavigationController
-from config_manager import ConfigManager
+from LifelistTracker.services.app_state_service import IAppStateService
+from LifelistTracker.services.lifelist_service import ILifelistService
+from LifelistTracker.services.config_service import IConfigService
+from LifelistTracker.services.database_service import IDatabaseService
+from LifelistTracker.viewmodels.lifelist_viewmodel import LifelistViewModel
+from LifelistTracker.viewmodels.welcome_viewmodel import WelcomeViewModel
+from LifelistTracker.viewmodels.observation_viewmodel import ObservationViewModel
+from LifelistTracker.viewmodels.observation_form_viewmodel import ObservationFormViewModel
+from LifelistTracker.viewmodels.taxonomy_viewmodel import TaxonomyViewModel
+from LifelistTracker.views.welcome_view import WelcomeView
+from LifelistTracker.views.lifelist_view import LifelistView
+from LifelistTracker.views.observation_form import ObservationForm
+from LifelistTracker.views.observation_view import ObservationView
+from LifelistTracker.views.taxonomy_manager import TaxonomyManager
+from LifelistTracker.views.utils import import_lifelist_dialog, export_lifelist_dialog
+from LifelistTracker.navigation_controller import NavigationController
+from LifelistTracker.di_container import container
 
 
 class LifelistApp:
@@ -32,16 +40,16 @@ class LifelistApp:
         """
         self.root = root
 
-        # Get the application configuration
-        self.config = ConfigManager.get_instance()
+        # Get services from dependency injection container
+        self.config_service = container.resolve(IConfigService)
+        self.app_state_service = container.resolve(IAppStateService)
+        self.lifelist_service = container.resolve(ILifelistService)
+        self.database_service = container.resolve(IDatabaseService)
 
         # Apply configuration
-        window_size = self.config.get_window_size()
+        window_size = self.config_service.get_window_size()
         self.root.title("Lifelist Manager")
         self.root.geometry(f"{window_size['width']}x{window_size['height']}")
-
-        # Initialize database through factory
-        self.db = DatabaseFactory.get_database()
 
         # Set up the main container
         self.main_container = ctk.CTkFrame(self.root)
@@ -55,23 +63,37 @@ class LifelistApp:
         self.content = ctk.CTkFrame(self.main_container)
         self.content.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Create AppState to manage application state
-        self.app_state = AppState(self.db)
-        self.app_state.register_state_change_callback(self.setup_sidebar)
+        # Register state change callback
+        self.app_state_service.register_state_change_callback(self.setup_sidebar)
 
         # Create NavigationController for view management
-        self.nav_controller = NavigationController(self.content, self.app_state, self.db)
+        self.nav_controller = NavigationController(self.content, self.app_state_service)
+
+        # Get ViewModels from dependency injection container
+        welcome_viewmodel = container.resolve(WelcomeViewModel)
+        lifelist_viewmodel = container.resolve(LifelistViewModel)
+        observation_viewmodel = container.resolve(ObservationViewModel)
+        observation_form_viewmodel = container.resolve(ObservationFormViewModel)
+        taxonomy_viewmodel = container.resolve(TaxonomyViewModel)
 
         # Register views with the navigation controller
-        self.nav_controller.register_view('welcome_view', WelcomeView)
-        self.nav_controller.register_view('lifelist_view', LifelistView)
-        self.nav_controller.register_view('observation_view', ObservationView)
-        self.nav_controller.register_view('observation_form', ObservationForm)
-        self.taxonomy_manager = TaxonomyManager(self.nav_controller, self.db, self.root)
+        self.nav_controller.register_view('welcome_view', WelcomeView,
+                                          controller=self.nav_controller, viewmodel=welcome_viewmodel)
+        self.nav_controller.register_view('lifelist_view', LifelistView,
+                                          controller=self.nav_controller, viewmodel=lifelist_viewmodel)
+        self.nav_controller.register_view('observation_view', ObservationView,
+                                          controller=self.nav_controller, viewmodel=observation_viewmodel)
+        self.nav_controller.register_view('observation_form', ObservationForm,
+                                          controller=self.nav_controller, viewmodel=observation_form_viewmodel)
+        self.nav_controller.register_view('taxonomy_view', TaxonomyManager,
+                                          controller=self.nav_controller, viewmodel=taxonomy_viewmodel)
 
         # Set up the sidebar and show welcome screen
         self.setup_sidebar()
         self.nav_controller.show_welcome()
+
+        # Register cleanup function to close database connection
+        atexit.register(self.database_service.close)
 
     def setup_sidebar(self):
         """Set up the sidebar with lifelist buttons and actions"""
@@ -88,14 +110,14 @@ class LifelistApp:
         sidebar_title.pack(pady=10)
 
         # Add lifelists
-        lifelists = self.db.get_lifelists()
+        lifelists = self.lifelist_service.get_all_lifelists()
 
         if lifelists:
             for lifelist in lifelists:
                 lifelist_btn = ctk.CTkButton(
                     self.sidebar,
-                    text=lifelist[1],
-                    command=lambda lid=lifelist[0]: self.nav_controller.open_lifelist(lid)
+                    text=lifelist.name,
+                    command=lambda lid=lifelist.id: self.nav_controller.open_lifelist(lid)
                 )
                 lifelist_btn.pack(pady=5, padx=10, fill=tk.X)
 
@@ -118,7 +140,7 @@ class LifelistApp:
         import_btn.pack(pady=5, padx=10, fill=tk.X)
 
         # Only show export if a lifelist is selected
-        current_lifelist_id = self.app_state.get_current_lifelist_id()
+        current_lifelist_id = self.app_state_service.get_current_lifelist_id()
         if current_lifelist_id:
             export_btn = ctk.CTkButton(
                 self.sidebar,
@@ -148,7 +170,7 @@ class LifelistApp:
     def delete_current_lifelist(self):
         """Delete the current lifelist"""
         try:
-            lifelist_id = self.app_state.get_current_lifelist_id()
+            lifelist_id = self.app_state_service.get_current_lifelist_id()
             if lifelist_id:
                 # Get the lifelist view instance, initializing if needed
                 lifelist_view = self.nav_controller.get_view('lifelist_view')
@@ -158,10 +180,10 @@ class LifelistApp:
 
     def import_lifelist(self):
         """Import a lifelist from file"""
-        import_lifelist_dialog(self.root, self.db, self.setup_sidebar)
+        import_lifelist_dialog(self.root, self.lifelist_service, self.setup_sidebar)
 
     def export_lifelist(self):
         """Export current lifelist to file"""
-        lifelist_id = self.app_state.get_current_lifelist_id()
-        lifelist_name = self.app_state.get_lifelist_name()
-        export_lifelist_dialog(self.root, self.db, lifelist_id, lifelist_name)
+        lifelist_id = self.app_state_service.get_current_lifelist_id()
+        lifelist_name = self.app_state_service.get_lifelist_name()
+        export_lifelist_dialog(self.root, self.lifelist_service, lifelist_id, lifelist_name)

@@ -1,10 +1,13 @@
+# utils/map_generator.py
 """
 Map Generator - Creates maps of observations with location data
 """
 import folium
 import os
-from models.photo_utils import PhotoUtils
-
+from LifelistTracker.utils.photo_utils import PhotoUtils
+from LifelistTracker.services.observation_service import IObservationService
+from LifelistTracker.services.photo_service import IPhotoService
+from typing import List, Tuple, Dict, Any, Optional, Set
 
 class MapGenerator:
     """
@@ -12,14 +15,18 @@ class MapGenerator:
     """
 
     @staticmethod
-    def create_observation_map(observations, db, output_path="observation_map.html"):
+    def create_observation_map(observations: List[Dict[str, Any]],
+                              observation_service: IObservationService,
+                              photo_service: IPhotoService,
+                              output_path: str = "observation_map.html") -> Tuple[Optional[str], str]:
         """
         Create a map showing all observation locations
 
         Args:
-            observations (list): List of observation tuples from database
-            db (Database): Database instance
-            output_path (str): Path to save the HTML map file
+            observations: List of observation dictionaries
+            observation_service: Service for observation operations
+            photo_service: Service for photo operations
+            output_path: Path to save the HTML map file
 
         Returns:
             tuple: (map_path, message) if successful, (None, error_message) if failed
@@ -30,21 +37,24 @@ class MapGenerator:
         processed_locations = set()
 
         # First find any coordinates to center the map
-        for obs in observations:
-            obs_id = obs[0]
-            obs_details = db.get_observation_details(obs_id)[0]
+        for obs_dict in observations:
+            obs_id = obs_dict['id']
+            observation = observation_service.get_observation(obs_id)
+
+            if not observation:
+                continue
 
             # Check observation coordinates
-            if obs_details and obs_details[5] is not None and obs_details[6] is not None:
-                map_center = [obs_details[5], obs_details[6]]
+            if observation.latitude is not None and observation.longitude is not None:
+                map_center = [observation.latitude, observation.longitude]
                 has_coords = True
                 break
 
             # Check photo coordinates
-            photos = db.get_photos(obs_id)
+            photos = photo_service.get_observation_photos(obs_id)
             for photo in photos:
-                if photo[3] is not None and photo[4] is not None:  # lat and lon
-                    map_center = [photo[3], photo[4]]
+                if photo.latitude is not None and photo.longitude is not None:
+                    map_center = [photo.latitude, photo.longitude]
                     has_coords = True
                     break
 
@@ -59,7 +69,8 @@ class MapGenerator:
         m = folium.Map(location=map_center, zoom_start=5)
 
         # Add markers for all observations
-        valid_markers = MapGenerator._add_observation_markers(m, observations, db, processed_locations)
+        valid_markers = MapGenerator._add_observation_markers(
+            m, observations, observation_service, photo_service, processed_locations)
 
         # Save the map using with context
         try:
@@ -70,14 +81,19 @@ class MapGenerator:
             return None, f"Error creating map: {str(e)}"
 
     @staticmethod
-    def _add_observation_markers(map_obj, observations, db, processed_locations):
+    def _add_observation_markers(map_obj: folium.Map,
+                                observations: List[Dict[str, Any]],
+                                observation_service: IObservationService,
+                                photo_service: IPhotoService,
+                                processed_locations: Set[str]) -> int:
         """
         Add observation markers to the map
 
         Args:
             map_obj: Folium map object
             observations: List of observations
-            db: Database connection
+            observation_service: Service for observation operations
+            photo_service: Service for photo operations
             processed_locations: Set of already processed locations to avoid duplicates
 
         Returns:
@@ -85,15 +101,22 @@ class MapGenerator:
         """
         valid_markers = 0
 
-        for obs in observations:
-            obs_id, species_name, obs_date, location, tier = obs
+        for obs_dict in observations:
+            obs_id = obs_dict['id']
+            species_name = obs_dict['species_name']
+            obs_date = obs_dict.get('observation_date')
+            location = obs_dict.get('location')
+            tier = obs_dict.get('tier')
 
             # Get observation details
-            obs_details = db.get_observation_details(obs_id)[0]
+            observation = observation_service.get_observation(obs_id)
+
+            if not observation:
+                continue
 
             # Add marker for observation coordinates if available
-            if obs_details and obs_details[5] is not None and obs_details[6] is not None:
-                lat, lon = obs_details[5], obs_details[6]
+            if observation.latitude is not None and observation.longitude is not None:
+                lat, lon = observation.latitude, observation.longitude
                 location_key = f"{lat:.6f},{lon:.6f}"
 
                 # Only add if we haven't added this exact location before
@@ -103,15 +126,15 @@ class MapGenerator:
                     # Add marker to map
                     if MapGenerator._add_marker_for_location(
                         map_obj, lat, lon, species_name, obs_date, location, tier,
-                        db, obs_details[1], processed_locations
+                        photo_service, observation.lifelist_id, processed_locations
                     ):
                         valid_markers += 1
 
             # Add markers for all photos with coordinates
-            photos = db.get_photos(obs_id)
+            photos = photo_service.get_observation_photos(obs_id)
             for photo in photos:
-                if photo[3] is not None and photo[4] is not None:  # lat and lon
-                    lat, lon = photo[3], photo[4]
+                if photo.latitude is not None and photo.longitude is not None:
+                    lat, lon = photo.latitude, photo.longitude
                     location_key = f"{lat:.6f},{lon:.6f}"
 
                     # Only add if we haven't added this exact location before
@@ -127,8 +150,12 @@ class MapGenerator:
         return valid_markers
 
     @staticmethod
-    def _add_marker_for_location(map_obj, lat, lon, species_name, obs_date, location, tier,
-                                db, lifelist_id, processed_locations):
+    def _add_marker_for_location(map_obj: folium.Map,
+                                lat: float, lon: float,
+                                species_name: str, obs_date: Any, location: Optional[str], tier: Optional[str],
+                                photo_service: IPhotoService,
+                                lifelist_id: int,
+                                processed_locations: Set[str]) -> bool:
         """
         Add a marker for an observation location
 
@@ -136,7 +163,7 @@ class MapGenerator:
             map_obj: Folium map object
             lat, lon: Coordinates
             species_name, obs_date, location, tier: Observation details
-            db: Database connection
+            photo_service: Service for photo operations
             lifelist_id: ID of the lifelist
             processed_locations: Set of processed locations
 
@@ -145,16 +172,18 @@ class MapGenerator:
         """
         try:
             # Try to get primary photo for this species
-            species_primary = db.get_species_primary_photo(lifelist_id, species_name)
+            species_primary_photo = photo_service.get_primary_photo_for_species(lifelist_id, species_name)
             img_base64 = None
             img_format = "jpeg"
 
-            if species_primary:
-                img_base64, img_format = PhotoUtils.image_to_base64(species_primary[1], max_size=(60, 60), is_pin=True)
+            if species_primary_photo and species_primary_photo.file_path:
+                img_base64, img_format = PhotoUtils.image_to_base64(
+                    species_primary_photo.file_path, max_size=(60, 60), is_pin=True)
 
             # Create popup content with larger image
-            if species_primary:
-                popup_img_base64, _ = PhotoUtils.image_to_base64(species_primary[1], max_size=(200, 150))
+            if species_primary_photo and species_primary_photo.file_path:
+                popup_img_base64, _ = PhotoUtils.image_to_base64(
+                    species_primary_photo.file_path, max_size=(200, 150))
                 popup_content = f"""
                 <strong>{species_name}</strong><br>
                 <img src="data:image/jpeg;base64,{popup_img_base64}" style="max-width:200px;"><br>
@@ -215,7 +244,10 @@ class MapGenerator:
             return False
 
     @staticmethod
-    def _add_photo_marker(map_obj, lat, lon, species_name, obs_date, location, tier, photo):
+    def _add_photo_marker(map_obj: folium.Map,
+                         lat: float, lon: float,
+                         species_name: str, obs_date: Any, location: Optional[str], tier: Optional[str],
+                         photo) -> bool:
         """
         Add a marker for a photo with coordinates
 
@@ -223,17 +255,17 @@ class MapGenerator:
             map_obj: Folium map object
             lat, lon: Coordinates
             species_name, obs_date, location, tier: Observation details
-            photo: Photo data tuple
+            photo: Photo object
 
         Returns:
             bool: True if marker was added, False otherwise
         """
         try:
             # Get thumbnail for icon with improved quality
-            img_base64, img_format = PhotoUtils.image_to_base64(photo[1], max_size=(100, 100), is_pin=True)
+            img_base64, img_format = PhotoUtils.image_to_base64(photo.file_path, max_size=(100, 100), is_pin=True)
 
             # Get larger image for popup
-            popup_img_base64, popup_format = PhotoUtils.image_to_base64(photo[1], max_size=(300, 200))
+            popup_img_base64, popup_format = PhotoUtils.image_to_base64(photo.file_path, max_size=(300, 200))
 
             # Create popup content
             if popup_img_base64:
@@ -251,7 +283,7 @@ class MapGenerator:
                 Date: {obs_date or 'Unknown'}<br>
                 Location: {location or 'Unknown'}<br>
                 Tier: {tier or 'Unknown'}<br>
-                Photo: {os.path.basename(photo[1])}
+                Photo: {os.path.basename(photo.file_path)}
                 """
 
             # Create a marker with the image if available

@@ -1,10 +1,11 @@
+# utils/photo_utils.py
 """
 PhotoUtils - Utilities for working with photos and images
 """
 from datetime import datetime
 from PIL import Image, ImageTk
 import exifread
-
+from typing import Optional, Tuple
 
 class PhotoUtils:
     """
@@ -12,12 +13,12 @@ class PhotoUtils:
     """
 
     @staticmethod
-    def extract_exif_data(photo_path):
+    def extract_exif_data(photo_path: str) -> Tuple[Optional[float], Optional[float], Optional[datetime]]:
         """
         Extract EXIF data from a photo file
 
         Args:
-            photo_path (str): Path to the photo file
+            photo_path: Path to the photo file
 
         Returns:
             tuple: (latitude, longitude, date_taken) or (None, None, None) if extraction fails
@@ -76,13 +77,13 @@ class PhotoUtils:
         return d + (m / 60.0) + (s / 3600.0)
 
     @staticmethod
-    def resize_image_for_thumbnail(img_path, size=(100, 100)):
+    def resize_image_for_thumbnail(img_path: str, size=(100, 100)) -> Optional[ImageTk.PhotoImage]:
         """
         Resize an image to create a thumbnail
 
         Args:
-            img_path (str): Path to the image file
-            size (tuple): Desired thumbnail size as (width, height)
+            img_path: Path to the image file
+            size: Desired thumbnail size as (width, height)
 
         Returns:
             ImageTk.PhotoImage: Thumbnail image ready for display in Tkinter
@@ -99,14 +100,14 @@ class PhotoUtils:
             return None
 
     @staticmethod
-    def image_to_base64(img_path, max_size=(200, 150), is_pin=False):
+    def image_to_base64(img_path: str, max_size=(200, 150), is_pin=False) -> Tuple[Optional[str], Optional[str]]:
         """
         Convert an image to a base64-encoded string with optimal quality
 
         Args:
-            img_path (str): Path to the image file
-            max_size (tuple): Maximum size as (width, height)
-            is_pin (bool): Whether this image is for a map pin (needs different processing)
+            img_path: Path to the image file
+            max_size: Maximum size as (width, height)
+            is_pin: Whether this image is for a map pin (needs different processing)
 
         Returns:
             tuple: (base64_string, format) or (None, None) if conversion fails
