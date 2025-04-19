@@ -53,6 +53,20 @@ class DatabaseFactory:
             return Database(db_path)
 
     @classmethod
+    def transaction(cls, operations_func, db_path: Optional[str] = None):
+        """Execute a function within a database transaction
+
+        Args:
+            operations_func: Function containing database operations
+            db_path: Optional custom database path
+
+        Returns:
+            Any: Result of the operations function
+        """
+        db = cls.get_database(db_path)
+        return db.execute_transaction(operations_func)
+
+    @classmethod
     def close_all(cls) -> None:
         """Close all database connections"""
         if cls._default_instance is not None:
