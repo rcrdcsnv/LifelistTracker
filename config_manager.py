@@ -1,50 +1,30 @@
-# services/config_service.py
 """
-Config Service - Manages application configuration
+ConfigManager - Manages application configuration
 """
 import os
 from typing import Dict, Any, Optional
 
-from LifelistTracker.utils.file_utils import FileUtils
+from file_utils import FileUtils
 
 
-class IConfigService:
-    """Interface for configuration service"""
+class ConfigManager:
+    """
+    Manager class for application configuration
+    """
+    _instance = None
+    _default_config_file = "config.json"
+    _config_data = None
 
-    def get_config(self, section: Optional[str] = None, key: Optional[str] = None) -> Any:
-        pass
-
-    def set_config(self, section: str, key: str, value: Any) -> None:
-        pass
-
-    def get_database_path(self) -> str:
-        pass
-
-    def get_window_size(self) -> Dict[str, int]:
-        pass
-
-    def get_theme(self) -> str:
-        pass
-
-    def get_color_theme(self) -> str:
-        pass
-
-
-class ConfigService(IConfigService):
-    """Service for managing application configuration"""
-
-    def __init__(self):
-        """
-        Initialize the configuration service
-
-        """
-        self._default_config_file = "config.json"
-        self._config_data = None
-        self._load_config()
+    def __new__(cls):
+        """Singleton pattern implementation"""
+        if cls._instance is None:
+            cls._instance = super(ConfigManager, cls).__new__(cls)
+            cls._instance._load_config()
+        return cls._instance
 
     def _load_config(self) -> None:
         """Load configuration from file"""
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", self._default_config_file)
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), self._default_config_file)
 
         # Load configuration or create default
         if os.path.exists(config_path):
@@ -57,7 +37,7 @@ class ConfigService(IConfigService):
 
     def _save_config(self) -> None:
         """Save configuration to file"""
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", self._default_config_file)
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), self._default_config_file)
         FileUtils.write_json(config_path, self._config_data)
 
     def _get_default_config(self) -> Dict[str, Any]:
@@ -87,6 +67,18 @@ class ConfigService(IConfigService):
             }
         }
 
+    @classmethod
+    def get_instance(cls) -> 'ConfigManager':
+        """
+        Get the singleton instance of the ConfigManager
+
+        Returns:
+            ConfigManager: Singleton instance
+        """
+        if cls._instance is None:
+            cls._instance = ConfigManager()
+        return cls._instance
+
     def get_config(self, section: Optional[str] = None, key: Optional[str] = None) -> Any:
         """
         Get configuration value
@@ -96,7 +88,7 @@ class ConfigService(IConfigService):
             key: Optional key within section
 
         Returns:
-            Configuration value, section dict, or entire config
+            Any: Configuration value, section dict, or entire config
         """
         if section is None:
             return self._config_data
@@ -132,7 +124,7 @@ class ConfigService(IConfigService):
         Get database path from configuration
 
         Returns:
-            Database path
+            str: Database path
         """
         return self.get_config("database", "path") or "lifelists.db"
 
@@ -141,7 +133,7 @@ class ConfigService(IConfigService):
         Get window size from configuration
 
         Returns:
-            Window size as {"width": int, "height": int}
+            dict: Window size as {"width": int, "height": int}
         """
         return self.get_config("ui", "window_size") or {"width": 1200, "height": 800}
 
@@ -150,7 +142,7 @@ class ConfigService(IConfigService):
         Get UI theme from configuration
 
         Returns:
-            UI theme
+            str: UI theme
         """
         return self.get_config("ui", "theme") or "System"
 
@@ -159,6 +151,6 @@ class ConfigService(IConfigService):
         Get UI color theme from configuration
 
         Returns:
-            UI color theme
+            str: UI color theme
         """
         return self.get_config("ui", "color_theme") or "blue"

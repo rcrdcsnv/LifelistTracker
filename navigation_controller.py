@@ -1,11 +1,8 @@
-# navigation_controller.py
 """
 NavigationController - Handles view transitions and UI component coordination
 """
 import tkinter as tk
 from typing import Optional, Type
-
-from LifelistTracker.services.app_state_service import IAppStateService
 
 
 class NavigationController:
@@ -13,16 +10,18 @@ class NavigationController:
     Controls navigation between different views in the application
     """
 
-    def __init__(self, content_frame: tk.Widget, app_state_service: IAppStateService):
+    def __init__(self, content_frame: tk.Widget, app_state, db):
         """
         Initialize the navigation controller
 
         Args:
             content_frame: The frame where views will be displayed
-            app_state_service: The application state service
+            app_state: The application state manager
+            db: Database connection
         """
         self.content_frame = content_frame
-        self.app_state = app_state_service
+        self.app_state = app_state
+        self.db = db
         self.views = {}  # Will store view instances
         self.root = content_frame.winfo_toplevel()
 
@@ -65,12 +64,13 @@ class NavigationController:
         if view_info['instance'] is None:
             # Create instance with appropriate dependencies
             view_kwargs = view_info['kwargs'].copy() if 'kwargs' in view_info else {}
-
-            # We no longer pass database directly to views
-            # Instead, relevant viewmodels are passed in kwargs
-            view_instance = view_info['class'](**view_kwargs)
-
-            view_info['instance'] = view_instance
+            view_kwargs.update({
+                'controller': self,
+                'app_state': self.app_state,
+                'db': self.db,
+                'content_frame': self.content_frame
+            })
+            view_info['instance'] = view_info['class'](**view_kwargs)
 
         # Show the view
         view_instance = view_info['instance']
@@ -122,9 +122,8 @@ class NavigationController:
 
     def show_taxonomy_manager(self):
         """Show the taxonomy manager dialog"""
-        taxonomy_view = self.get_view('taxonomy_view')
-        if taxonomy_view:
-            taxonomy_view.show_dialog()
+        if hasattr(self.controller, 'taxonomy_manager'):
+            self.controller.taxonomy_manager.show_dialog()
 
     def show_welcome(self) -> None:
         """Show the welcome screen"""

@@ -1,46 +1,39 @@
-# views/welcome_view.py
 """
 Welcome view - Main welcome screen for the application
 """
 import tkinter as tk
 import customtkinter as ctk
 
-from LifelistTracker.viewmodels.welcome_viewmodel import WelcomeViewModel
-from LifelistTracker.navigation_controller import NavigationController
 
 class WelcomeView:
     """
     Welcome screen view component
     """
 
-    def __init__(self, controller: NavigationController, viewmodel: WelcomeViewModel):
+    def __init__(self, controller, app_state, db, content_frame):
         """
         Initialize the welcome view
 
         Args:
             controller: Navigation controller
-            viewmodel: Welcome ViewModel
+            app_state: Application state manager
+            db: Database connection
+            content_frame: Content frame for displaying the view
         """
         self.controller = controller
-        self.viewmodel = viewmodel
-        self.content_frame = None
-
-        # Register for viewmodel state changes
-        self.viewmodel.register_state_change_callback(self.on_viewmodel_changed)
+        self.app_state = app_state
+        self.db = db
+        self.content_frame = content_frame
 
     def show(self, **kwargs):
         """Display the welcome screen"""
-        # Get content frame from kwargs
-        self.content_frame = kwargs.get('content_frame')
-        if not self.content_frame:
-            return
+        # Reset application state
+        self.app_state.set_current_lifelist(None)
+        self.app_state.set_current_observation(None)
 
         # Clear the content area
         for widget in self.content_frame.winfo_children():
             widget.destroy()
-
-        # Load recent lifelists from viewmodel
-        self.viewmodel.load_recent_lifelists()
 
         # Create welcome screen
         welcome_frame = ctk.CTkFrame(self.content_frame)
@@ -94,10 +87,10 @@ class WelcomeView:
         button_frame = ctk.CTkFrame(content_frame)
         button_frame.pack(fill=tk.X, pady=20)
 
-        # Check if we have any recent lifelists
-        recent_lifelists = self.viewmodel.recent_lifelists
+        # Check if we have any existing lifelists
+        lifelists = self.db.get_lifelists()
 
-        if recent_lifelists:
+        if lifelists:
             recent_label = ctk.CTkLabel(
                 button_frame,
                 text="Recent Lifelists:",
@@ -106,13 +99,13 @@ class WelcomeView:
             recent_label.pack(anchor="w", pady=(0, 10))
 
             # Show up to 3 most recent lifelists
-            for lifelist in recent_lifelists:
+            for i, lifelist in enumerate(lifelists[:3]):
                 list_btn = ctk.CTkButton(
                     button_frame,
-                    text=lifelist.name,
+                    text=lifelist[1],
                     width=300,
                     height=40,
-                    command=lambda lid=lifelist.id: self.controller.open_lifelist(lid)
+                    command=lambda lid=lifelist[0]: self.controller.open_lifelist(lid)
                 )
                 list_btn.pack(anchor="w", pady=5)
 
@@ -136,21 +129,20 @@ class WelcomeView:
         )
         import_btn.pack(anchor="w", pady=5)
 
-    def on_viewmodel_changed(self):
-        """Handle viewmodel state changes by refreshing the view"""
-        if self.content_frame:
-            self.show(content_frame=self.content_frame)
-
     def _show_create_lifelist_dialog(self):
         """Show dialog to create a new lifelist"""
         # Use the lifelist view to show the create dialog
-        lifelist_view = self.controller.get_view('lifelist_view')
+        lifelist_view = self.controller.views['lifelist_view']['instance']
         if lifelist_view:
             lifelist_view.show_create_lifelist_dialog()
 
     def _import_lifelist(self):
         """Import a lifelist from file"""
-        # Get the required services from the lifelist view
-        lifelist_view = self.controller.get_view('lifelist_view')
-        if lifelist_view:
-            lifelist_view.import_lifelist()
+        from ui.utils import import_lifelist_dialog
+
+        # Use the import dialog utility
+        import_lifelist_dialog(
+            self.content_frame.winfo_toplevel(),
+            self.db,
+            lambda: self.controller.show_welcome()  # Refresh view after import
+        )
