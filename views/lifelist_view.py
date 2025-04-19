@@ -1,60 +1,46 @@
-# views/lifelist_view.py
 """
-Lifelist view - Displays and manages lifelist contents
+Lifelist view module - Displays and manages lifelist contents
 """
 import tkinter as tk
 import customtkinter as ctk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 import webbrowser
 import os
 import tempfile
 
-from LifelistTracker.navigation_controller import NavigationController
-from LifelistTracker.viewmodels.lifelist_viewmodel import LifelistViewModel
-from LifelistTracker.utils.photo_utils import PhotoUtils
-from LifelistTracker.utils.map_generator import MapGenerator
-from LifelistTracker.views.utils import (
-    create_scrollable_container, center_window,
-    export_lifelist_dialog, import_lifelist_dialog
-)
-from LifelistTracker.services.lifelist_service import ILifelistService
-from LifelistTracker.services.file_service import IFileService
-from LifelistTracker.services.observation_service import IObservationService
-from LifelistTracker.services.photo_service import IPhotoService
-from LifelistTracker.di_container import container
+from models.photo_utils import PhotoUtils
+from models.map_generator import MapGenerator
+from ui.utils import show_message, create_scrollable_container, center_window
+from file_utils import FileUtils
+
 
 class LifelistView:
     """
     UI Component for displaying and managing lifelists
     """
 
-    def __init__(self, controller: NavigationController, viewmodel: LifelistViewModel):
+    def __init__(self, controller, app_state, db, content_frame):
         """
         Initialize the lifelist view
 
         Args:
             controller: Navigation controller
-            viewmodel: Lifelist ViewModel
+            app_state: Application state manager
+            db: Database connection
+            content_frame: Content frame for displaying lifelist
         """
         self.controller = controller
-        self.viewmodel = viewmodel
-        self.content_frame = None
+        self.app_state = app_state
+        self.db = db
+        self.content_frame = content_frame
 
-        # Get required services
-        self.lifelist_service = container.resolve(ILifelistService)
-        self.file_service = container.resolve(IFileService)
-        self.observation_service = container.resolve(IObservationService)
-        self.photo_service = container.resolve(IPhotoService)
-
-        # UI state
+        # State
+        self.selected_tag_ids = []
         self.lifelist_frame = None
         self.observation_list_canvas = None
         self.observations_container = None
         self.search_var = None
         self.tier_var = None
-
-        # Register for viewmodel state changes
-        self.viewmodel.register_state_change_callback(self.on_viewmodel_changed)
 
     def show(self, lifelist_id=None, lifelist_name=None, **kwargs):
         """
@@ -63,28 +49,27 @@ class LifelistView:
         Args:
             lifelist_id: Optional ID of lifelist to display (defaults to current)
             lifelist_name: Optional name of lifelist
-            **kwargs: Additional keyword arguments
         """
-        # Get content frame from kwargs
-        self.content_frame = kwargs.get('content_frame')
-        if not self.content_frame:
-            return
+        # Use current lifelist_id if not provided
+        if lifelist_id is None:
+            lifelist_id = self.app_state.get_current_lifelist_id()
 
-        # Load lifelist from viewmodel
-        if lifelist_id:
-            self.viewmodel.load_lifelist(lifelist_id)
-            self.display_lifelist()
-        else:
-            # No lifelist specified, show welcome screen
-            self.controller.show_welcome()
+        if lifelist_name is None:
+            lifelist_name = self.app_state.get_lifelist_name()
 
-    def on_viewmodel_changed(self):
-        """Handle viewmodel state changes by refreshing the view"""
-        if self.content_frame and self.viewmodel.current_lifelist_id:
-            self.display_lifelist()
+        self.display_lifelist(lifelist_id, lifelist_name)
 
-    def display_lifelist(self):
-        """Display a lifelist with its observations"""
+    def display_lifelist(self, lifelist_id, lifelist_name):
+        """
+        Display a lifelist with its observations
+
+        Args:
+            lifelist_id: ID of the lifelist to display
+            lifelist_name: Name of the lifelist
+        """
+        # Update application state
+        self.app_state.set_current_lifelist(lifelist_id)
+
         # Clear the content area
         for widget in self.content_frame.winfo_children():
             widget.destroy()
@@ -93,22 +78,17 @@ class LifelistView:
         self.lifelist_frame = ctk.CTkFrame(self.content_frame)
         self.lifelist_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Get lifelist name from viewmodel
-        lifelist_name = ""
-        if self.viewmodel.current_lifelist:
-            lifelist_name = self.viewmodel.current_lifelist.name
-
         # Header with lifelist name and buttons
         self._create_header(lifelist_name)
 
         # Search and filter section
-        self._create_filter_section()
+        self._create_filter_section(lifelist_id)
 
         # Observation list
         self._create_observation_list()
 
         # Load observations
-        self._update_observation_list()
+        self.load_observations()
 
     def _create_header(self, lifelist_name):
         """Create the header section with title and buttons"""
@@ -151,7 +131,7 @@ class LifelistView:
         )
         add_btn.pack(side=tk.RIGHT, padx=5)
 
-    def _create_filter_section(self):
+    def _create_filter_section(self, lifelist_id):
         """Create the search and filter section"""
         filter_frame = ctk.CTkFrame(self.lifelist_frame)
         filter_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
@@ -168,11 +148,7 @@ class LifelistView:
         tier_label = ctk.CTkLabel(filter_frame, text="Tier:")
         tier_label.pack(side=tk.LEFT, padx=(15, 5))
 
-        # Get tiers from viewmodel
-        tiers = ["All"]
-        if self.viewmodel.current_lifelist_id:
-            tiers += self.lifelist_service.get_all_tiers(self.viewmodel.current_lifelist_id)
-
+        tiers = ["All"] + self.db.get_all_tiers(lifelist_id)
         self.tier_var = tk.StringVar(value="All")
         tier_dropdown = ctk.CTkComboBox(filter_frame, values=tiers, variable=self.tier_var)
         tier_dropdown.pack(side=tk.LEFT, padx=5)
@@ -222,13 +198,37 @@ class LifelistView:
         ctk.CTkLabel(header, text="Tier", width=100).pack(side=tk.LEFT, padx=5)
         ctk.CTkLabel(header, text="Actions", width=100).pack(side=tk.LEFT, padx=5)
 
-    def _update_observation_list(self):
-        """Update the observation list from the viewmodel"""
+    def on_frame_configure(self, event):
+        """Handle frame configuration event to update scrollregion"""
+        self.observation_list_canvas.configure(scrollregion=self.observation_list_canvas.bbox("all"))
+
+    def on_canvas_configure(self, event):
+        """Handle canvas configuration event to update window width"""
+        self.observation_list_canvas.itemconfig("win", width=event.width)
+
+    def load_observations(self, search_term=None, tier=None):
+        """
+        Load observations into the list with optional filtering
+
+        Args:
+            search_term: Optional search term to filter by
+            tier: Optional tier to filter by
+        """
         # Clear existing observation items
         for widget in self.observations_container.winfo_children()[1:]:  # Skip the header
             widget.destroy()
 
-        observations = self.viewmodel.observations
+        # Get filtered observations
+        if tier == "All":
+            tier = None
+
+        current_lifelist_id = self.app_state.get_current_lifelist_id()
+        observations = self.db.get_observations(
+            current_lifelist_id,
+            tier=tier,
+            tag_ids=self.selected_tag_ids if self.selected_tag_ids else None,
+            search_term=search_term
+        )
 
         if not observations:
             no_results = ctk.CTkLabel(
@@ -239,27 +239,82 @@ class LifelistView:
             no_results.pack(pady=20)
             return
 
-        # Add each species/observation to the list
-        for obs in observations:
-            self._add_observation_row(obs)
+        # Group observations by species
+        species_groups = self._group_observations_by_species(observations)
 
-    def _add_observation_row(self, observation_data):
-        """Add a row for an observation to the list"""
-        species_name = observation_data["species_name"]
-        obs_id = observation_data["id"]
-        obs_date = observation_data.get("observation_date")
-        location = observation_data.get("location")
-        tier = observation_data.get("tier")
-        observation_count = observation_data.get("observation_count", 1)
+        # Add each species group to the list
+        for species_name, data in species_groups.items():
+            self._add_species_row(species_name, data)
+
+    def _group_observations_by_species(self, observations):
+        """
+        Group observations by species name
+
+        Args:
+            observations: List of observation records
+
+        Returns:
+            dict: Dictionary of species groups
+        """
+        species_groups = {}
+        for obs in observations:
+            obs_id, species_name, obs_date, location, tier = obs
+
+            # If we haven't seen this species yet, create a new entry
+            if species_name not in species_groups:
+                species_groups[species_name] = {
+                    "latest_id": obs_id,
+                    "date": obs_date,
+                    "location": location,
+                    "tier": tier,
+                    "observation_ids": [obs_id]
+                }
+            else:
+                # Add this observation ID to the list
+                species_groups[species_name]["observation_ids"].append(obs_id)
+
+                # Update date if this observation is more recent
+                if not species_groups[species_name]["date"] or (obs_date and (
+                        not species_groups[species_name]["date"] or obs_date > species_groups[species_name]["date"])):
+                    species_groups[species_name]["date"] = obs_date
+                    species_groups[species_name]["location"] = location
+                    species_groups[species_name]["latest_id"] = obs_id
+
+                # Update tier if this tier is "higher" in precedence
+                # Tier precedence: wild > heard > captive
+                tier_precedence = {"wild": 3, "heard": 2, "captive": 1}
+                current_tier_value = tier_precedence.get(species_groups[species_name]["tier"], 0)
+                new_tier_value = tier_precedence.get(tier, 0)
+
+                if new_tier_value > current_tier_value:
+                    species_groups[species_name]["tier"] = tier
+
+        return species_groups
+
+    def _add_species_row(self, species_name, data):
+        """
+        Add a row for a species group to the observation list
+
+        Args:
+            species_name: Name of the species
+            data: Dictionary with species data
+        """
+        obs_id = data["latest_id"]
+        obs_date = data["date"]
+        location = data["location"]
+        tier = data["tier"]
+        observation_count = len(data["observation_ids"])
+        lifelist_id = self.app_state.get_current_lifelist_id()
 
         item = ctk.CTkFrame(self.observations_container)
         item.pack(fill=tk.X, padx=5, pady=2)
 
-        # Try to get the photo thumbnail
+        # Try to get the primary photo for this species
         photo_thumbnail = None
-        if "photo_data" in observation_data and observation_data["photo_data"].get("file_path"):
-            file_path = observation_data["photo_data"]["file_path"]
-            thumbnail = PhotoUtils.resize_image_for_thumbnail(file_path)
+        species_primary = self.db.get_species_primary_photo(lifelist_id, species_name)
+
+        if species_primary:
+            thumbnail = PhotoUtils.resize_image_for_thumbnail(species_primary[1])
             if thumbnail:
                 photo_thumbnail = thumbnail
 
@@ -300,7 +355,7 @@ class LifelistView:
                 actions_frame,
                 text="View All",
                 width=70,
-                command=lambda obs_ids=observation_data.get("observation_ids"), name=species_name:
+                command=lambda obs_ids=data["observation_ids"], name=species_name:
                 self.view_species_observations(obs_ids, name)
             )
             view_all_btn.pack(side=tk.LEFT, padx=2)
@@ -310,7 +365,7 @@ class LifelistView:
                 actions_frame,
                 text="View",
                 width=70,
-                command=lambda o_id=obs_id: self.view_observation(o_id)
+                command=lambda o_id=data["latest_id"]: self.view_observation(o_id)
             )
             view_btn.pack(side=tk.LEFT, padx=2)
 
@@ -353,7 +408,7 @@ class LifelistView:
         back_btn = ctk.CTkButton(
             header_frame,
             text="Back to Lifelist",
-            command=lambda: self.controller.open_lifelist(self.viewmodel.current_lifelist_id)
+            command=lambda: self.controller.open_lifelist(self.app_state.get_current_lifelist_id())
         )
         back_btn.pack(side=tk.RIGHT, padx=5)
 
@@ -382,20 +437,22 @@ class LifelistView:
 
         # Add each observation
         for obs_id in observation_ids:
-            observation = self.observation_service.get_observation(obs_id)
+            observation = self.db.get_observation_details(obs_id)[0]
             if not observation:
                 continue
+
+            _, _, _, obs_date, location, _, _, tier, _ = observation
 
             item = ctk.CTkFrame(observations_container)
             item.pack(fill=tk.X, padx=5, pady=2)
 
-            date_label = ctk.CTkLabel(item, text=observation.observation_date or "N/A", width=100)
+            date_label = ctk.CTkLabel(item, text=obs_date or "N/A", width=100)
             date_label.pack(side=tk.LEFT, padx=5)
 
-            location_label = ctk.CTkLabel(item, text=observation.location or "N/A", width=200)
+            location_label = ctk.CTkLabel(item, text=location or "N/A", width=200)
             location_label.pack(side=tk.LEFT, padx=5)
 
-            tier_label = ctk.CTkLabel(item, text=observation.tier or "N/A", width=100)
+            tier_label = ctk.CTkLabel(item, text=tier or "N/A", width=100)
             tier_label.pack(side=tk.LEFT, padx=5)
 
             # Action buttons
@@ -425,11 +482,12 @@ class LifelistView:
         Args:
             observation_id: ID of the observation to view
         """
+        self.app_state.set_current_observation(observation_id)
         self.controller.show_observation(observation_id)
 
     def add_new_observation(self):
         """Add a new observation"""
-        lifelist_id = self.viewmodel.current_lifelist_id
+        lifelist_id = self.app_state.get_current_lifelist_id()
         self.controller.show_observation_form(lifelist_id=lifelist_id)
 
     def add_new_observation_of_species(self, species_name):
@@ -439,7 +497,7 @@ class LifelistView:
         Args:
             species_name: Name of the species to observe
         """
-        lifelist_id = self.viewmodel.current_lifelist_id
+        lifelist_id = self.app_state.get_current_lifelist_id()
         self.controller.show_observation_form(lifelist_id=lifelist_id, species_name=species_name)
 
     def edit_observation(self, observation_id):
@@ -449,28 +507,22 @@ class LifelistView:
         Args:
             observation_id: ID of the observation to edit
         """
-        lifelist_id = self.viewmodel.current_lifelist_id
+        lifelist_id = self.app_state.get_current_lifelist_id()
         self.controller.show_observation_form(lifelist_id=lifelist_id, observation_id=observation_id)
 
     def apply_filters(self):
         """Apply current filters to the observation list"""
-        # Update viewmodel filters
-        self.viewmodel.set_search_term(self.search_var.get() if self.search_var.get() else "")
-        self.viewmodel.set_selected_tier(self.tier_var.get())
-
-        # Reload observations with current filters
-        self.viewmodel.load_observations()
+        self.load_observations(
+            search_term=self.search_var.get() if self.search_var.get() else None,
+            tier=self.tier_var.get()
+        )
 
     def clear_filters(self):
         """Clear all filters"""
         self.search_var.set("")
         self.tier_var.set("All")
-
-        # Clear viewmodel filters
-        self.viewmodel.clear_filters()
-
-        # Reload observations with cleared filters
-        self.viewmodel.load_observations()
+        self.selected_tag_ids = []
+        self.load_observations()
 
     def show_tag_filter_dialog(self):
         """Show dialog to select tags for filtering"""
@@ -483,10 +535,10 @@ class LifelistView:
         center_window(dialog)
 
         # Get all tags
-        all_tags = self.observation_service.get_all_tags()
+        all_tags = self.db.get_all_tags()
 
         # Selected tags
-        selected_tag_ids = set(self.viewmodel.selected_tag_ids)
+        selected_tags = set(self.selected_tag_ids)
 
         ctk.CTkLabel(dialog, text="Select Tags to Filter By:", font=ctk.CTkFont(weight="bold")).pack(pady=10)
 
@@ -497,13 +549,13 @@ class LifelistView:
         # Tag checkboxes
         tag_vars = {}
 
-        for tag in all_tags:
-            var = tk.BooleanVar(value=tag.id in selected_tag_ids)
-            tag_vars[tag.id] = var
+        for tag_id, tag_name in all_tags:
+            var = tk.BooleanVar(value=tag_id in selected_tags)
+            tag_vars[tag_id] = var
 
             checkbox = ctk.CTkCheckBox(
                 scroll_frame,
-                text=tag.name,
+                text=tag_name,
                 variable=var
             )
             checkbox.pack(anchor="w", pady=2)
@@ -511,13 +563,8 @@ class LifelistView:
         # Apply button
         def apply_tag_filter():
             selected = [tag_id for tag_id, var in tag_vars.items() if var.get()]
-
-            # Update viewmodel
-            self.viewmodel.set_selected_tag_ids(selected)
-
-            # Reload observations with updated filters
-            self.viewmodel.load_observations()
-
+            self.selected_tag_ids = selected
+            self.load_observations()
             dialog.destroy()
 
         apply_btn = ctk.CTkButton(
@@ -529,7 +576,7 @@ class LifelistView:
 
     def edit_lifelist_tiers(self):
         """Show dialog to edit tiers for the current lifelist"""
-        lifelist_id = self.viewmodel.current_lifelist_id
+        lifelist_id = self.app_state.get_current_lifelist_id()
         if not lifelist_id:
             return
 
@@ -542,7 +589,7 @@ class LifelistView:
         center_window(dialog)
 
         # Get current tiers
-        current_tiers = self.lifelist_service.get_lifelist_tiers(lifelist_id)
+        current_tiers = self.db.get_lifelist_tiers(lifelist_id)
 
         ctk.CTkLabel(
             dialog,
@@ -689,18 +736,14 @@ class LifelistView:
                 messagebox.showerror("Error", "You must define at least one observation tier")
                 return
 
-            try:
-                # Save tiers to database
-                success = self.lifelist_service.set_lifelist_tiers(lifelist_id, tiers)
+            # Save tiers to database
+            self.db.set_lifelist_tiers(lifelist_id, tiers)
 
-                if success:
-                    # Close dialog
-                    dialog.destroy()
+            # Close dialog
+            dialog.destroy()
 
-                    # Reload the lifelist
-                    self.controller.open_lifelist(lifelist_id)
-            except Exception as e:
-                messagebox.showerror("Error", f"An error occurred: {str(e)}")
+            # Reload the lifelist
+            self.controller.open_lifelist(lifelist_id)
 
         save_btn = ctk.CTkButton(
             btn_frame,
@@ -711,12 +754,12 @@ class LifelistView:
 
     def view_map(self):
         """View a map of all observations in the current lifelist"""
-        lifelist_id = self.viewmodel.current_lifelist_id
+        lifelist_id = self.app_state.get_current_lifelist_id()
         if not lifelist_id:
             return
 
-        # Get all observations for this lifelist (unfiltered)
-        observations = self.observation_service.get_filtered_observations(lifelist_id)
+        # Get all observations for this lifelist
+        observations = self.db.get_observations(lifelist_id)
 
         if not observations:
             messagebox.showinfo("Map View", "No observations to display on the map")
@@ -728,8 +771,7 @@ class LifelistView:
 
         # Generate the map
         map_generator = MapGenerator()
-        result = map_generator.create_observation_map(
-            observations, self.observation_service, self.photo_service, map_file.name)
+        result = map_generator.create_observation_map(observations, self.db, map_file.name)
 
         if isinstance(result, tuple) and len(result) == 2:
             map_path, message = result
@@ -741,10 +783,10 @@ class LifelistView:
             else:
                 # Map creation failed
                 messagebox.showinfo("Map Creation Failed",
-                                   f"Could not create map: {message}\n\n"
-                                   "To fix this issue:\n"
-                                   "1. Add latitude/longitude data to your observations, or\n"
-                                   "2. Upload photos that contain GPS information in their EXIF data")
+                                    f"Could not create map: {message}\n\n"
+                                    "To fix this issue:\n"
+                                    "1. Add latitude/longitude data to your observations, or\n"
+                                    "2. Upload photos that contain GPS information in their EXIF data")
         else:
             messagebox.showerror("Error", "An unexpected error occurred while creating the map")
 
@@ -965,13 +1007,11 @@ class LifelistView:
                 return
 
             # Create the lifelist
-            lifelist = self.lifelist_service.create_lifelist(name, taxonomy)
+            lifelist_id = self.db.create_lifelist(name, taxonomy)
 
-            if not lifelist:
+            if lifelist_id is None:
                 messagebox.showerror("Error", f"A lifelist named '{name}' already exists")
                 return
-
-            lifelist_id = lifelist.id
 
             # Add custom fields
             for field_name_entry, field_type_combobox, _ in custom_fields:
@@ -979,7 +1019,7 @@ class LifelistView:
                 field_type = field_type_combobox.get()
 
                 if field_name:
-                    self.lifelist_service.add_custom_field(lifelist_id, field_name, field_type)
+                    self.db.add_custom_field(lifelist_id, field_name, field_type)
 
             # Add custom tiers
             tiers = []
@@ -990,7 +1030,7 @@ class LifelistView:
 
             # Make sure we have at least one tier
             if tiers:
-                self.lifelist_service.set_lifelist_tiers(lifelist_id, tiers)
+                self.db.set_lifelist_tiers(lifelist_id, tiers)
 
             # Close dialog and open the new lifelist
             dialog.destroy()
@@ -1004,11 +1044,16 @@ class LifelistView:
         create_btn.pack(side=tk.RIGHT, padx=5)
 
     def delete_lifelist(self, lifelist_id):
-        """Delete a lifelist"""
+        """
+        Delete a lifelist
+
+        Args:
+            lifelist_id: ID of the lifelist to delete
+        """
         if not lifelist_id:
             return
 
-        lifelist_name = self.viewmodel.current_lifelist.name if self.viewmodel.current_lifelist else ""
+        lifelist_name = self.app_state.get_lifelist_name()
 
         confirm = messagebox.askyesno(
             "Confirm Delete",
@@ -1024,32 +1069,15 @@ class LifelistView:
 
             if export_first:
                 # Export
-                export_lifelist_dialog(
-                    self.content_frame.winfo_toplevel(),
-                    self.lifelist_service,
-                    self.file_service,
-                    lifelist_id,
-                    lifelist_name
-                )
+                from ui.utils import export_lifelist_dialog
+                export_lifelist_dialog(self.content_frame.winfo_toplevel(), self.db, lifelist_id, lifelist_name)
 
-            try:
-                # Execute delete operation
-                success = self.lifelist_service.delete_lifelist(lifelist_id)
+            success = self.db.delete_lifelist(lifelist_id)
 
-                if success:
-                    messagebox.showinfo("Success", f"Lifelist '{lifelist_name}' has been deleted")
-                    self.controller.show_welcome()
-                else:
-                    messagebox.showerror("Error", f"Failed to delete lifelist '{lifelist_name}'")
-
-            except Exception as e:
-                messagebox.showerror("Error", f"An error occurred: {str(e)}")
-
-    def import_lifelist(self):
-        """Import a lifelist from file"""
-        import_lifelist_dialog(
-            self.content_frame.winfo_toplevel(),
-            self.lifelist_service,
-            self.file_service,
-            self.controller.show_welcome
-        )
+            if success:
+                messagebox.showinfo("Success", f"Lifelist '{lifelist_name}' has been deleted")
+                self.app_state.set_current_lifelist(None)
+                self.app_state.set_current_observation(None)
+                self.controller.show_welcome()
+            else:
+                messagebox.showerror("Error", f"Failed to delete lifelist '{lifelist_name}'")
