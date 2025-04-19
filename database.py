@@ -163,6 +163,25 @@ class Database:
 
         self.conn.commit()
 
+    def execute_transaction(self, operations_func):
+        """Execute multiple SQL operations as a single transaction
+
+        Args:
+            operations_func: Function that contains database operations to execute
+
+        Returns:
+            Any: The result of operations_func execution
+        """
+        try:
+            self.conn.execute("BEGIN TRANSACTION")
+            result = operations_func()
+            self.conn.commit()
+            return result
+        except Exception as e:
+            self.conn.rollback()
+            print(f"Transaction error: {e}")
+            raise e
+
     # Lifelist methods
     def create_lifelist(self, name, taxonomy=None):
         """Create a new lifelist"""

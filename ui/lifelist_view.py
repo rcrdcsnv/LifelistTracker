@@ -8,6 +8,7 @@ import webbrowser
 import os
 import tempfile
 
+from database_factory import DatabaseFactory
 from models.photo_utils import PhotoUtils
 from models.map_generator import MapGenerator
 from ui.utils import show_message, create_scrollable_container, center_window
@@ -736,14 +737,23 @@ class LifelistView:
                 messagebox.showerror("Error", "You must define at least one observation tier")
                 return
 
-            # Save tiers to database
-            self.db.set_lifelist_tiers(lifelist_id, tiers)
+            try:
+                # Get database without context manager
+                db = DatabaseFactory.get_database()
 
-            # Close dialog
-            dialog.destroy()
+                # Save tiers to database in a transaction
+                success = db.execute_transaction(
+                    lambda: db.set_lifelist_tiers(lifelist_id, tiers)
+                )
 
-            # Reload the lifelist
-            self.controller.open_lifelist(lifelist_id)
+                if success:
+                    # Close dialog
+                    dialog.destroy()
+
+                    # Reload the lifelist
+                    self.controller.open_lifelist(lifelist_id)
+            except Exception as e:
+                messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
         save_btn = ctk.CTkButton(
             btn_frame,
@@ -1044,12 +1054,7 @@ class LifelistView:
         create_btn.pack(side=tk.RIGHT, padx=5)
 
     def delete_lifelist(self, lifelist_id):
-        """
-        Delete a lifelist
-
-        Args:
-            lifelist_id: ID of the lifelist to delete
-        """
+        """Delete a lifelist"""
         if not lifelist_id:
             return
 
@@ -1072,12 +1077,22 @@ class LifelistView:
                 from ui.utils import export_lifelist_dialog
                 export_lifelist_dialog(self.content_frame.winfo_toplevel(), self.db, lifelist_id, lifelist_name)
 
-            success = self.db.delete_lifelist(lifelist_id)
+            try:
+                # Get database without context manager
+                db = DatabaseFactory.get_database()
 
-            if success:
-                messagebox.showinfo("Success", f"Lifelist '{lifelist_name}' has been deleted")
-                self.app_state.set_current_lifelist(None)
-                self.app_state.set_current_observation(None)
-                self.controller.show_welcome()
-            else:
-                messagebox.showerror("Error", f"Failed to delete lifelist '{lifelist_name}'")
+                # Execute delete operation in a transaction
+                success = db.execute_transaction(
+                    lambda: db.delete_lifelist(lifelist_id)
+                )
+
+                if success:
+                    messagebox.showinfo("Success", f"Lifelist '{lifelist_name}' has been deleted")
+                    self.app_state.set_current_lifelist(None)
+                    self.app_state.set_current_observation(None)
+                    self.controller.show_welcome()
+                else:
+                    messagebox.showerror("Error", f"Failed to delete lifelist '{lifelist_name}'")
+
+            except Exception as e:
+                messagebox.showerror("Error", f"An error occurred: {str(e)}")

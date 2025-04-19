@@ -36,12 +36,13 @@ class AppState:
         if not self.current_lifelist_id:
             return ""
 
-        with DatabaseFactory.get_database() as db:
-            db.cursor.execute("SELECT name FROM lifelists WHERE id = ?", (self.current_lifelist_id,))
-            result = db.cursor.fetchone()
+        # Get database without context manager
+        db = DatabaseFactory.get_database()
+        db.cursor.execute("SELECT name FROM lifelists WHERE id = ?", (self.current_lifelist_id,))
+        result = db.cursor.fetchone()
 
-            if result:
-                return result[0]
+        if result:
+            return result[0]
         return ""
 
     def set_current_lifelist(self, lifelist_id: Optional[int]) -> None:
