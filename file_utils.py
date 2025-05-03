@@ -89,8 +89,7 @@ class FileUtils:
             with open(file_path, 'r', encoding=encoding) as f:
                 reader = csv.DictReader(f)
                 headers = reader.fieldnames or []
-                for row in reader:
-                    rows.append(row)
+                rows.extend(iter(reader))
             return rows, headers
         except Exception as e:
             print(f"Error reading CSV file {file_path}: {e}")
@@ -115,8 +114,7 @@ class FileUtils:
             with open(file_path, 'r', encoding=encoding) as f:
                 reader = csv.reader(f)
                 headers = next(reader, [])
-                for row in reader:
-                    rows.append(row)
+                rows.extend(iter(reader))
             return rows, headers
         except Exception as e:
             print(f"Error reading CSV file {file_path}: {e}")
@@ -142,11 +140,10 @@ class FileUtils:
                 if rows and isinstance(rows[0], dict):
                     writer = csv.DictWriter(f, fieldnames=headers)
                     writer.writeheader()
-                    writer.writerows(rows)
                 else:
                     writer = csv.writer(f)
                     writer.writerow(headers)
-                    writer.writerows(rows)
+                writer.writerows(rows)
             return True
         except Exception as e:
             print(f"Error writing CSV file {file_path}: {e}")
@@ -209,9 +206,8 @@ class FileUtils:
             files = []
             for filename in os.listdir(directory_path):
                 file_path = os.path.join(directory_path, filename)
-                if os.path.isfile(file_path):
-                    if extension is None or filename.lower().endswith(extension.lower()):
-                        files.append(file_path)
+                if os.path.isfile(file_path) and (extension is None or filename.lower().endswith(extension.lower())):
+                    files.append(file_path)
             return files
         except Exception as e:
             print(f"Error listing files in {directory_path}: {e}")

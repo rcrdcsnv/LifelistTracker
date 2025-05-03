@@ -41,9 +41,7 @@ class AppState:
         db.cursor.execute("SELECT name FROM lifelists WHERE id = ?", (self.current_lifelist_id,))
         result = db.cursor.fetchone()
 
-        if result:
-            return result[0]
-        return ""
+        return result[0] if result else ""
 
     def set_current_lifelist(self, lifelist_id: Optional[int]) -> None:
         """

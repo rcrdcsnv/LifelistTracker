@@ -42,15 +42,14 @@ class DatabaseFactory:
         Returns:
             Database: Database connection
         """
-        if db_path is None:
-            db_path = cls._default_db_path
-
-            # Create default instance if it doesn't exist
-            if cls._default_instance is None:
-                cls._default_instance = Database(db_path)
-            return cls._default_instance
-        else:
+        if db_path is not None:
             return Database(db_path)
+        db_path = cls._default_db_path
+
+        # Create default instance if it doesn't exist
+        if cls._default_instance is None:
+            cls._default_instance = Database(db_path)
+        return cls._default_instance
 
     @classmethod
     def transaction(cls, operations_func, db_path: Optional[str] = None):

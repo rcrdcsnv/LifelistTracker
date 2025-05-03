@@ -141,10 +141,9 @@ def export_lifelist_dialog(root, db, lifelist_id, lifelist_name):
         if isinstance(db, DatabaseFactory):
             db = DatabaseFactory.get_database()
 
-        # Export the lifelist
-        success = db.export_lifelist(lifelist_id, export_path, include_photos)
-
-        if success:
+        if success := db.export_lifelist(
+            lifelist_id, export_path, include_photos
+        ):
             show_message(
                 "Export Successful",
                 f"Lifelist '{lifelist_name}' has been exported to:\n{export_path}"
@@ -180,12 +179,10 @@ def import_lifelist_dialog(root, db, callback):
     potential_photos_dir = path.join(json_dir, "photos")
 
     if path.isdir(potential_photos_dir):
-        include_photos = messagebox.askyesno(
+        if include_photos := messagebox.askyesno(
             "Import Photos?",
-            "A 'photos' directory was found. Would you like to include photos in the import?"
-        )
-
-        if include_photos:
+            "A 'photos' directory was found. Would you like to include photos in the import?",
+        ):
             photos_dir = potential_photos_dir
 
     try:

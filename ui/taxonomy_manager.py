@@ -182,10 +182,7 @@ class TaxonomyManager:
         taxonomies_frame = ctk.CTkFrame(parent)
         taxonomies_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Get current taxonomies
-        taxonomies = self.db.get_taxonomies(lifelist_id)
-
-        if taxonomies:
+        if taxonomies := self.db.get_taxonomies(lifelist_id):
             # Create a list of taxonomies
             headers = ctk.CTkFrame(taxonomies_frame)
             headers.pack(fill=tk.X, pady=5)
@@ -254,12 +251,9 @@ class TaxonomyManager:
         try:
             db = DatabaseFactory.get_database()
 
-            # Execute activation in a transaction
-            success = db.execute_transaction(
+            if success := db.execute_transaction(
                 lambda: db.set_active_taxonomy(taxonomy_id, lifelist_id)
-            )
-
-            if success:
+            ):
                 messagebox.showinfo("Success", "Taxonomy activated successfully")
                 dialog.destroy()
                 self.show_dialog()  # Reopen with updated info
@@ -271,22 +265,21 @@ class TaxonomyManager:
 
     def _delete_taxonomy(self, taxonomy_id, lifelist_id, dialog):
         """Delete a taxonomy"""
-        confirm = messagebox.askyesno(
+        if confirm := messagebox.askyesno(
             "Confirm Delete",
-            "Are you sure you want to delete this taxonomy? This cannot be undone."
-        )
-
-        if confirm:
+            "Are you sure you want to delete this taxonomy? This cannot be undone.",
+        ):
             try:
                 # Get database without context manager
                 db = DatabaseFactory.get_database()
 
-                # Execute deletion in a transaction
-                success = db.execute_transaction(lambda: {
-                    db.cursor.execute("DELETE FROM taxonomies WHERE id = ?", (taxonomy_id,))
-                })
-
-                if success:
+                if success := db.execute_transaction(
+                    lambda: {
+                        db.cursor.execute(
+                            "DELETE FROM taxonomies WHERE id = ?", (taxonomy_id,)
+                        )
+                    }
+                ):
                     messagebox.showinfo("Success", "Taxonomy deleted successfully")
                 dialog.destroy()
                 self.show_dialog()  # Reopen with updated info
@@ -386,7 +379,9 @@ class TaxonomyManager:
                 row = ctk.CTkFrame(mapping_frame)
                 row.pack(fill=tk.X, pady=2)
 
-                ctk.CTkLabel(row, text=display_name + ":", width=200).pack(side=tk.LEFT, padx=5)
+                ctk.CTkLabel(row, text=f"{display_name}:", width=200).pack(
+                    side=tk.LEFT, padx=5
+                )
 
                 # Create dropdown with CSV headers
                 field_var = tk.StringVar()

@@ -87,10 +87,7 @@ class LifelistApp:
         )
         sidebar_title.pack(pady=10)
 
-        # Add lifelists
-        lifelists = self.db.get_lifelists()
-
-        if lifelists:
+        if lifelists := self.db.get_lifelists():
             for lifelist in lifelists:
                 lifelist_btn = ctk.CTkButton(
                     self.sidebar,
@@ -117,9 +114,7 @@ class LifelistApp:
         )
         import_btn.pack(pady=5, padx=10, fill=tk.X)
 
-        # Only show export if a lifelist is selected
-        current_lifelist_id = self.app_state.get_current_lifelist_id()
-        if current_lifelist_id:
+        if current_lifelist_id := self.app_state.get_current_lifelist_id():
             export_btn = ctk.CTkButton(
                 self.sidebar,
                 text="Export Current Lifelist",
@@ -148,8 +143,7 @@ class LifelistApp:
     def delete_current_lifelist(self):
         """Delete the current lifelist"""
         try:
-            lifelist_id = self.app_state.get_current_lifelist_id()
-            if lifelist_id:
+            if lifelist_id := self.app_state.get_current_lifelist_id():
                 # Get the lifelist view instance, initializing if needed
                 lifelist_view = self.nav_controller.get_view('lifelist_view')
                 lifelist_view.delete_lifelist(lifelist_id)

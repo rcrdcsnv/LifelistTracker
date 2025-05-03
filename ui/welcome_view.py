@@ -87,10 +87,7 @@ class WelcomeView:
         button_frame = ctk.CTkFrame(content_frame)
         button_frame.pack(fill=tk.X, pady=20)
 
-        # Check if we have any existing lifelists
-        lifelists = self.db.get_lifelists()
-
-        if lifelists:
+        if lifelists := self.db.get_lifelists():
             recent_label = ctk.CTkLabel(
                 button_frame,
                 text="Recent Lifelists:",
@@ -99,7 +96,7 @@ class WelcomeView:
             recent_label.pack(anchor="w", pady=(0, 10))
 
             # Show up to 3 most recent lifelists
-            for i, lifelist in enumerate(lifelists[:3]):
+            for lifelist in lifelists[:3]:
                 list_btn = ctk.CTkButton(
                     button_frame,
                     text=lifelist[1],
@@ -131,9 +128,7 @@ class WelcomeView:
 
     def _show_create_lifelist_dialog(self):
         """Show dialog to create a new lifelist"""
-        # Use the lifelist view to show the create dialog
-        lifelist_view = self.controller.views['lifelist_view']['instance']
-        if lifelist_view:
+        if lifelist_view := self.controller.views['lifelist_view']['instance']:
             lifelist_view.show_create_lifelist_dialog()
 
     def _import_lifelist(self):

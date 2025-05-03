@@ -227,7 +227,7 @@ class LifelistView:
         observations = self.db.get_observations(
             current_lifelist_id,
             tier=tier,
-            tag_ids=self.selected_tag_ids if self.selected_tag_ids else None,
+            tag_ids=self.selected_tag_ids or None,
             search_term=search_term
         )
 
@@ -315,8 +315,9 @@ class LifelistView:
         species_primary = self.db.get_species_primary_photo(lifelist_id, species_name)
 
         if species_primary:
-            thumbnail = PhotoUtils.resize_image_for_thumbnail(species_primary[1])
-            if thumbnail:
+            if thumbnail := PhotoUtils.resize_image_for_thumbnail(
+                species_primary[1]
+            ):
                 photo_thumbnail = thumbnail
 
         # Species name (with thumbnail if available)
@@ -514,7 +515,7 @@ class LifelistView:
     def apply_filters(self):
         """Apply current filters to the observation list"""
         self.load_observations(
-            search_term=self.search_var.get() if self.search_var.get() else None,
+            search_term=self.search_var.get() or None,
             tier=self.tier_var.get()
         )
 
@@ -789,7 +790,7 @@ class LifelistView:
             if map_path:
                 # Map was created successfully
                 messagebox.showinfo("Map Created", message)
-                webbrowser.open('file://' + os.path.realpath(map_path))
+                webbrowser.open(f'file://{os.path.realpath(map_path)}')
             else:
                 # Map creation failed
                 messagebox.showinfo("Map Creation Failed",
@@ -1060,19 +1061,14 @@ class LifelistView:
 
         lifelist_name = self.app_state.get_lifelist_name()
 
-        confirm = messagebox.askyesno(
+        if confirm := messagebox.askyesno(
             "Confirm Delete",
-            f"Are you sure you want to delete the lifelist '{lifelist_name}'? This will delete all observations and cannot be undone."
-        )
-
-        if confirm:
-            # First offer to export
-            export_first = messagebox.askyesno(
+            f"Are you sure you want to delete the lifelist '{lifelist_name}'? This will delete all observations and cannot be undone.",
+        ):
+            if export_first := messagebox.askyesno(
                 "Export First?",
-                "Would you like to export this lifelist before deleting it?"
-            )
-
-            if export_first:
+                "Would you like to export this lifelist before deleting it?",
+            ):
                 # Export
                 from ui.utils import export_lifelist_dialog
                 export_lifelist_dialog(self.content_frame.winfo_toplevel(), self.db, lifelist_id, lifelist_name)
@@ -1081,12 +1077,9 @@ class LifelistView:
                 # Get database without context manager
                 db = DatabaseFactory.get_database()
 
-                # Execute delete operation in a transaction
-                success = db.execute_transaction(
+                if success := db.execute_transaction(
                     lambda: db.delete_lifelist(lifelist_id)
-                )
-
-                if success:
+                ):
                     messagebox.showinfo("Success", f"Lifelist '{lifelist_name}' has been deleted")
                     self.app_state.set_current_lifelist(None)
                     self.app_state.set_current_observation(None)

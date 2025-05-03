@@ -204,9 +204,7 @@ class Database:
         """Delete a lifelist by ID"""
         # First, get the lifelist data for potential export
         self.cursor.execute("SELECT name FROM lifelists WHERE id = ?", (lifelist_id,))
-        lifelist = self.cursor.fetchone()
-
-        if lifelist:
+        if lifelist := self.cursor.fetchone():
             self.cursor.execute("DELETE FROM lifelists WHERE id = ?", (lifelist_id,))
             self.conn.commit()
             return True
@@ -243,10 +241,7 @@ class Database:
         tiers = [row[0] for row in self.cursor.fetchall()]
 
         # If no custom tiers are defined, return the default ones
-        if not tiers:
-            return ["wild", "heard", "captive"]
-
-        return tiers
+        return tiers or ["wild", "heard", "captive"]
 
     def set_lifelist_tiers(self, lifelist_id, tiers):
         """Set custom tiers for a lifelist"""
@@ -520,9 +515,7 @@ class Database:
             latitude, longitude, tier, notes FROM observations WHERE id = ?""",
             (observation_id,)
         )
-        observation = self.cursor.fetchone()
-
-        if observation:
+        if observation := self.cursor.fetchone():
             # Get custom field values
             self.cursor.execute(
                 """SELECT cf.field_name, cf.field_type, ocf.value
@@ -645,9 +638,7 @@ class Database:
         WHERE o.lifelist_id = ? AND o.species_name = ? AND p.is_primary = 1
         """
         self.cursor.execute(query, (lifelist_id, species_name))
-        result = self.cursor.fetchone()
-
-        if result:
+        if result := self.cursor.fetchone():
             return result
 
         # If no primary photo is set, find any photo for this species
@@ -909,9 +900,7 @@ class Database:
 
             # Check if lifelist already exists
             self.cursor.execute("SELECT id FROM lifelists WHERE name = ?", (lifelist_name,))
-            existing = self.cursor.fetchone()
-
-            if existing:
+            if existing := self.cursor.fetchone():
                 return False, f"Lifelist '{lifelist_name}' already exists"
 
             lifelist_id = self.create_lifelist(lifelist_name, taxonomy)
@@ -947,8 +936,7 @@ class Database:
                         "SELECT id FROM custom_fields WHERE lifelist_id = ? AND field_name = ?",
                         (lifelist_id, field_name)
                     )
-                    field_result = self.cursor.fetchone()
-                    if field_result:
+                    if field_result := self.cursor.fetchone():
                         field_id = field_result[0]
                         self.cursor.execute(
                             "INSERT INTO observation_custom_fields (observation_id, field_id, value) VALUES (?, ?, ?)",

@@ -1,0 +1,24 @@
+{
+  "database": {
+    "path": "lifelists.db"
+  },
+  "ui": {
+    "theme": "System",
+    "color_theme": "blue",
+    "window_size": {
+      "width": 1200,
+      "height": 800
+    }
+  },
+  "export": {
+    "default_directory": "",
+    "include_photos": true
+  },
+  "map": {
+    "default_zoom": 5,
+    "marker_size": {
+      "width": 100,
+      "height": 100
+    }
+  }
+}

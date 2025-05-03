@@ -132,22 +132,15 @@ class ObservationView:
         photos_frame = ctk.CTkFrame(parent)
         photos_frame.pack(fill=tk.X, padx=20, pady=10)
 
-        # Show primary photo larger, with small thumbnails below
-        primary_photo = None
-        for photo in photos:
-            if photo[2]:  # is_primary
-                primary_photo = photo
-                break
-
+        primary_photo = next((photo for photo in photos if photo[2]), None)
         if not primary_photo and photos:
             primary_photo = photos[0]
 
         if primary_photo:
             try:
-                # Use PhotoUtils with context manager
-                photo_img = PhotoUtils.resize_image_for_thumbnail(primary_photo[1], (600, 400))
-
-                if photo_img:
+                if photo_img := PhotoUtils.resize_image_for_thumbnail(
+                    primary_photo[1], (600, 400)
+                ):
                     photo_label = ctk.CTkLabel(photos_frame, text="", image=photo_img)
                     photo_label.pack(pady=10)
                     self.photo_images.append(photo_img)  # Keep a reference
@@ -161,9 +154,9 @@ class ObservationView:
 
             for photo in photos:
                 try:
-                    thumbnail = PhotoUtils.resize_image_for_thumbnail(photo[1], (80, 80))
-
-                    if thumbnail:
+                    if thumbnail := PhotoUtils.resize_image_for_thumbnail(
+                        photo[1], (80, 80)
+                    ):
                         thumb_frame = ctk.CTkFrame(thumbnails_frame)
                         thumb_frame.pack(side=tk.LEFT, padx=5)
 

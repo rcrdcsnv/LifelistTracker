@@ -228,14 +228,10 @@ class ObservationForm:
 
                 ctk.CTkLabel(field_frame, text=f"{field_name}:", width=150).pack(side=tk.LEFT, padx=5)
 
-                if field_type == "text":
-                    field_entry = ctk.CTkEntry(field_frame, width=300)
-                elif field_type == "number":
-                    field_entry = ctk.CTkEntry(field_frame, width=300)
+                if field_type == "boolean":
+                    field_entry = ctk.CTkCheckBox(field_frame, text="")
                 elif field_type == "date":
                     field_entry = ctk.CTkEntry(field_frame, width=300, placeholder_text="YYYY-MM-DD")
-                elif field_type == "boolean":
-                    field_entry = ctk.CTkCheckBox(field_frame, text="")
                 else:
                     field_entry = ctk.CTkEntry(field_frame, width=300)
 
@@ -367,14 +363,8 @@ class ObservationForm:
                 self.showing_suggestions = False
             return
 
-        # Get active taxonomy
-        active_tax = self.db.get_active_taxonomy(self.current_lifelist_id)
-
-        if active_tax:
-            # Search the taxonomy
-            results = self.db.search_taxonomy(active_tax[0], text)
-
-            if results:
+        if active_tax := self.db.get_active_taxonomy(self.current_lifelist_id):
+            if results := self.db.search_taxonomy(active_tax[0], text):
                 # Clear current suggestions
                 self.suggestion_list.delete(0, tk.END)
                 self.suggestions = []
@@ -392,16 +382,12 @@ class ObservationForm:
                 if not self.showing_suggestions:
                     self.suggestion_frame.pack(side=tk.TOP, fill=tk.X, pady=2)
                     self.showing_suggestions = True
-            else:
-                # No results, hide suggestions
-                if self.showing_suggestions:
-                    self.suggestion_frame.pack_forget()
-                    self.showing_suggestions = False
-        else:
-            # No active taxonomy, hide suggestions
-            if self.showing_suggestions:
+            elif self.showing_suggestions:
                 self.suggestion_frame.pack_forget()
                 self.showing_suggestions = False
+        elif self.showing_suggestions:
+            self.suggestion_frame.pack_forget()
+            self.showing_suggestions = False
 
     def _select_suggestion(self, event):
         """
@@ -478,12 +464,9 @@ class ObservationForm:
         filetypes = [
             ("Image files", "*.jpg *.jpeg *.png *.gif *.bmp *.tif *.tiff")
         ]
-        file_paths = filedialog.askopenfilenames(
-            title="Select Photos",
-            filetypes=filetypes
-        )
-
-        if file_paths:
+        if file_paths := filedialog.askopenfilenames(
+            title="Select Photos", filetypes=filetypes
+        ):
             # Check if this species already has a primary photo
             species_name = self.species_entry.get().strip()
             has_primary = False
@@ -496,7 +479,7 @@ class ObservationForm:
 
             for path in file_paths:
                 # Ensure the path is not already in the list
-                if not any(p["path"] == path for p in self.photos):
+                if all(p["path"] != path for p in self.photos):
                     # Extract EXIF data if available
                     lat, lon, taken_date = PhotoUtils.extract_exif_data(path)
 
@@ -505,14 +488,18 @@ class ObservationForm:
 
                     # Add to photos list - only set as primary if there's no existing primary
                     # for this species and no primary in the current list
-                    self.photos.append({
-                        "path": path,
-                        "is_primary": not (has_primary or current_has_primary) and len(self.photos) == 0,
-                        "thumbnail": thumbnail,
-                        "latitude": lat,
-                        "longitude": lon,
-                        "taken_date": taken_date
-                    })
+                    self.photos.append(
+                        {
+                            "path": path,
+                            "is_primary": not has_primary
+                            and not current_has_primary
+                            and len(self.photos) == 0,
+                            "thumbnail": thumbnail,
+                            "latitude": lat,
+                            "longitude": lon,
+                            "taken_date": taken_date,
+                        }
+                    )
 
             self._update_photos_display()
 
@@ -723,8 +710,8 @@ class ObservationForm:
 
                     # For existing observations, get current photos and remove ones that are no longer in the UI
                     current_photos = db.get_photos(obs_id)
-                    current_photo_ids = set(photo[0] for photo in current_photos)
-                    kept_photo_ids = set(photo.get("id") for photo in self.photos if "id" in photo)
+                    current_photo_ids = {photo[0] for photo in current_photos}
+                    kept_photo_ids = {photo.get("id") for photo in self.photos if "id" in photo}
 
                     # Photos to delete = current photos that aren't in the kept photos list
                     photos_to_delete = current_photo_ids - kept_photo_ids
@@ -824,12 +811,10 @@ class ObservationForm:
         if not self.current_observation_id:
             return
 
-        confirm = messagebox.askyesno(
+        if confirm := messagebox.askyesno(
             "Confirm Delete",
-            "Are you sure you want to delete this observation? This action cannot be undone."
-        )
-
-        if confirm:
+            "Are you sure you want to delete this observation? This action cannot be undone.",
+        ):
             try:
                 # Get database without context manager
                 db = DatabaseFactory.get_database()
