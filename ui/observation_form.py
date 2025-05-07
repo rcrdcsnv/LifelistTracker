@@ -5,6 +5,7 @@ import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import json
+import re
 
 from database_factory import DatabaseFactory
 from models.photo_utils import PhotoUtils
@@ -361,9 +362,49 @@ class ObservationForm:
                         custom_entry.pack(side=tk.LEFT, padx=5)
 
                         def set_custom_color():
-                            color = custom_entry.get().strip()
-                            if color:
+                            original_color = custom_entry.get().strip()
+                            if not original_color:
+                                return
+
+                            # Add # if it's a valid hex without the prefix
+                            if re.match(r'^[0-9A-Fa-f]{6}$', original_color):
+                                color = f"#{original_color}"
+                            else:
+                                color = original_color
+
+                            try:
+                                # Try to use the color with a temporary widget to validate it
+                                test_widget = ctk.CTkFrame(color_frame)
+                                # This will raise an exception if color is invalid
+                                test_widget.configure(fg_color=color)
+
+                                # Get the actual RGB for any valid color (hex or named)
+                                # We'll use winfo_rgb to get the RGB values regardless of how the color was specified
+                                rgb_color = test_widget.winfo_rgb(color)
+
+                                # winfo_rgb returns values in range 0-65535, convert to 0-255
+                                r = rgb_color[0] // 257
+                                g = rgb_color[1] // 257
+                                b = rgb_color[2] // 257
+
+                                # Calculate perceived brightness
+                                brightness = 0.299 * r + 0.587 * g + 0.114 * b
+
+                                # Choose white or black text based on brightness
+                                text_color = "black" if brightness > 128 else "white"
+
+                                # Update the color variable and button appearance
                                 color_var.set(color)
+                                apply_btn.configure(fg_color=color, text_color=text_color)
+
+                                # Clean up the test widget
+                                test_widget.destroy()
+                            except Exception:
+                                # Show error message for invalid color
+                                messagebox.showerror(
+                                    "Invalid Color",
+                                    "Please enter a valid color name or hex color (e.g., #FF5500, FF5500, red, blue)"
+                                )
 
                         apply_btn = ctk.CTkButton(
                             color_frame,
