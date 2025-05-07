@@ -3,6 +3,7 @@ Observation view - Display observation details
 """
 import tkinter as tk
 import customtkinter as ctk
+import json
 
 from ui.utils import create_scrollable_container
 from models.photo_utils import PhotoUtils
@@ -57,6 +58,10 @@ class ObservationView:
         # Update application state
         self.app_state.set_current_observation(observation_id)
 
+        # Get lifelist type-specific terminology
+        entry_term = self.app_state.get_entry_term()
+        observation_term = self.app_state.get_observation_term()
+
         # Clear photo references
         self.photo_images = []
 
@@ -77,7 +82,7 @@ class ObservationView:
         if not observation:
             error_label = ctk.CTkLabel(
                 detail_frame,
-                text="Observation not found",
+                text=f"{observation_term.capitalize()} not found",
                 font=ctk.CTkFont(size=16)
             )
             error_label.pack(pady=20)
@@ -93,17 +98,17 @@ class ObservationView:
         # Photos carousel at the top
         self._create_photo_gallery(detail_frame, observation_id)
 
-        # Header with species name
-        species_name = observation[2]
+        # Header with entry name
+        entry_name = observation[2]
         title_label = ctk.CTkLabel(
             detail_frame,
-            text=species_name,
+            text=entry_name,
             font=ctk.CTkFont(size=24, weight="bold")
         )
         title_label.pack(pady=15)
 
         # Details section
-        self._create_details_section(detail_frame, observation)
+        self._create_details_section(detail_frame, observation, entry_term, observation_term)
 
         # Custom fields
         if custom_fields:
@@ -114,7 +119,7 @@ class ObservationView:
             self._create_tags_section(detail_frame, tags)
 
         # Action buttons
-        self._create_action_buttons(detail_frame, observation_id)
+        self._create_action_buttons(detail_frame, observation_id, observation_term)
 
     def _create_photo_gallery(self, parent, observation_id):
         """
@@ -132,6 +137,7 @@ class ObservationView:
         photos_frame = ctk.CTkFrame(parent)
         photos_frame.pack(fill=tk.X, padx=20, pady=10)
 
+        # Show primary photo larger, with small thumbnails below
         primary_photo = next((photo for photo in photos if photo[2]), None)
         if not primary_photo and photos:
             primary_photo = photos[0]
@@ -171,13 +177,15 @@ class ObservationView:
                 except Exception as e:
                     print(f"Error creating thumbnail: {e}")
 
-    def _create_details_section(self, parent, observation):
+    def _create_details_section(self, parent, observation, entry_term, observation_term):
         """
         Create the details section
 
         Args:
             parent: Parent widget
             observation: Observation data tuple
+            entry_term: Term used for entries in this lifelist
+            observation_term: Term used for observations in this lifelist
         """
         details_frame = ctk.CTkFrame(parent)
         details_frame.pack(fill=tk.X, padx=20, pady=10)
@@ -190,7 +198,7 @@ class ObservationView:
         date_frame = ctk.CTkFrame(details_grid)
         date_frame.pack(fill=tk.X, pady=2)
 
-        ctk.CTkLabel(date_frame, text="Date:", width=150, font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(date_frame, text=f"{observation_term.capitalize()} Date:", width=150, font=ctk.CTkFont(weight="bold")).pack(side=tk.LEFT, padx=5)
         ctk.CTkLabel(date_frame, text=observation[3] or "Not recorded").pack(side=tk.LEFT, padx=5)
 
         # Location
@@ -259,10 +267,79 @@ class ObservationView:
             # Format the value based on field type
             if field_type == "boolean":
                 display_value = "Yes" if value == "1" else "No"
-            else:
-                display_value = value or "Not specified"
+                ctk.CTkLabel(field_frame, text=display_value).pack(side=tk.LEFT, padx=5)
+            elif field_type == "choice":
+                # For choice fields, show the display value if possible
+                try:
+                    # Get the field options from the database
+                    observation_id = self.app_state.get_current_observation_id()
+                    self.db.cursor.execute(
+                        """
+                        SELECT cf.field_options, ocf.field_id
+                        FROM observation_custom_fields ocf
+                        JOIN custom_fields cf ON cf.id = ocf.field_id
+                        WHERE ocf.observation_id = ? AND cf.field_name = ?
+                        """,
+                        (observation_id, field_name)
+                    )
+                    result = self.db.cursor.fetchone()
 
-            ctk.CTkLabel(field_frame, text=display_value).pack(side=tk.LEFT, padx=5)
+                    if result and result[0]:
+                        field_options = json.loads(result[0]) if isinstance(result[0], str) else result[0]
+                        field_id = result[1]
+
+                        # Get the options for this field
+                        self.db.cursor.execute(
+                            """
+                            SELECT option_value, option_label
+                            FROM field_options
+                            WHERE field_id = ?
+                            """,
+                            (field_id,)
+                        )
+                        options = self.db.cursor.fetchall()
+
+                        # Find the matching option
+                        display_value = value
+                        for option_value, option_label in options:
+                            if option_value == value:
+                                display_value = option_label or value
+                                break
+
+                        ctk.CTkLabel(field_frame, text=display_value or "Not specified").pack(side=tk.LEFT, padx=5)
+                    else:
+                        ctk.CTkLabel(field_frame, text=value or "Not specified").pack(side=tk.LEFT, padx=5)
+                except Exception:
+                    ctk.CTkLabel(field_frame, text=value or "Not specified").pack(side=tk.LEFT, padx=5)
+            elif field_type == "color":
+                # Create a color swatch
+                if value:
+                    color_frame = ctk.CTkFrame(field_frame, width=30, height=30, fg_color=value)
+                    color_frame.pack(side=tk.LEFT, padx=5, pady=5)
+                    # Also show the color value
+                    ctk.CTkLabel(field_frame, text=value).pack(side=tk.LEFT, padx=5)
+                else:
+                    ctk.CTkLabel(field_frame, text="Not specified").pack(side=tk.LEFT, padx=5)
+            elif field_type == "rating":
+                # Create a star rating display
+                rating_frame = ctk.CTkFrame(field_frame)
+                rating_frame.pack(side=tk.LEFT, padx=5)
+
+                try:
+                    rating = int(value)
+                    for _ in range(rating):
+                        star_label = ctk.CTkLabel(
+                            rating_frame,
+                            text="★",
+                            font=ctk.CTkFont(size=16),
+                            text_color="gold"
+                        )
+                        star_label.pack(side=tk.LEFT, padx=1)
+                except Exception:
+                    ctk.CTkLabel(field_frame, text=value or "Not specified").pack(side=tk.LEFT, padx=5)
+            else:
+                # Default display for text, number, date fields
+                ctk.CTkLabel(field_frame, text=value or "Not specified").pack(side=tk.LEFT, padx=5)
 
     def _create_tags_section(self, parent, tags):
         """
@@ -270,7 +347,7 @@ class ObservationView:
 
         Args:
             parent: Parent widget
-            tags: List of tag tuples (id, name)
+            tags: List of tag tuples (id, name, category)
         """
         tags_label = ctk.CTkLabel(
             parent,
@@ -282,24 +359,51 @@ class ObservationView:
         tags_frame = ctk.CTkFrame(parent)
         tags_frame.pack(fill=tk.X, padx=20, pady=5)
 
-        for tag_id, tag_name in tags:
-            tag_label = ctk.CTkLabel(
-                tags_frame,
-                text=tag_name,
-                fg_color="gray30",
-                corner_radius=10,
-                padx=10,
-                pady=5
-            )
-            tag_label.pack(side=tk.LEFT, padx=5, pady=5)
+        # Group tags by category
+        tags_by_category = {}
+        for tag_id, tag_name, category in tags:
+            if category not in tags_by_category:
+                tags_by_category[category] = []
+            tags_by_category[category].append(tag_name)
+            
+        # Create a section for each category
+        for category, tag_names in tags_by_category.items():
+            category_frame = ctk.CTkFrame(tags_frame)
+            category_frame.pack(fill=tk.X, pady=2)
+            
+            # Add category header if it exists
+            if category:
+                category_label = ctk.CTkLabel(
+                    category_frame,
+                    text=category,
+                    font=ctk.CTkFont(size=12, weight="bold")
+                )
+                category_label.pack(anchor="w", padx=5, pady=(5, 0))
+                
+            # Create tag labels container
+            tags_container = ctk.CTkFrame(category_frame)
+            tags_container.pack(fill=tk.X, padx=5, pady=5)
+                
+            # Add tags for this category
+            for tag_name in tag_names:
+                tag_label = ctk.CTkLabel(
+                    tags_container,
+                    text=tag_name,
+                    fg_color="gray30",
+                    corner_radius=10,
+                    padx=10,
+                    pady=5
+                )
+                tag_label.pack(side=tk.LEFT, padx=5, pady=5)
 
-    def _create_action_buttons(self, parent, observation_id):
+    def _create_action_buttons(self, parent, observation_id, observation_term):
         """
         Create action buttons
 
         Args:
             parent: Parent widget
             observation_id: ID of the observation
+            observation_term: Term used for observations in this lifelist
         """
         buttons_frame = ctk.CTkFrame(parent)
         buttons_frame.pack(fill=tk.X, padx=20, pady=20)
@@ -313,8 +417,8 @@ class ObservationView:
 
         edit_btn = ctk.CTkButton(
             buttons_frame,
-            text="Edit Observation",
-            command=lambda: self.edit_observation(observation_id)
+            text=f"Edit {observation_term.capitalize()}",
+            command=lambda oid=observation_id: self.edit_observation(oid)
         )
         edit_btn.pack(side=tk.RIGHT, padx=5)
 

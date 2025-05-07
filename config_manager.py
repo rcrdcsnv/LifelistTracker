@@ -2,7 +2,7 @@
 ConfigManager - Manages application configuration
 """
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from file_utils import FileUtils
 
@@ -63,6 +63,65 @@ class ConfigManager:
                 "marker_size": {
                     "width": 100,
                     "height": 100
+                }
+            },
+            "lifelist_types": {
+                "templates": {
+                    "Wildlife": {
+                        "tiers": ["wild", "heard", "captive"],
+                        "entry_term": "species",
+                        "observation_term": "sighting",
+                        "default_fields": [
+                            {"name": "Scientific Name", "type": "text", "required": 0},
+                            {"name": "Family", "type": "text", "required": 0},
+                            {"name": "Weather", "type": "text", "required": 0}
+                        ]
+                    },
+                    "Plants": {
+                        "tiers": ["wild", "garden", "greenhouse"],
+                        "entry_term": "species",
+                        "observation_term": "sighting",
+                        "default_fields": [
+                            {"name": "Scientific Name", "type": "text", "required": 0},
+                            {"name": "Family", "type": "text", "required": 0},
+                            {"name": "Habitat", "type": "text", "required": 0},
+                            {"name": "Flowering Season", "type": "text", "required": 0}
+                        ]
+                    },
+                    "Books": {
+                        "tiers": ["read", "currently reading", "want to read", "abandoned"],
+                        "entry_term": "book",
+                        "observation_term": "reading",
+                        "default_fields": [
+                            {"name": "Author", "type": "text", "required": 1},
+                            {"name": "Publisher", "type": "text", "required": 0},
+                            {"name": "Year", "type": "number", "required": 0},
+                            {"name": "Genre", "type": "text", "required": 0},
+                            {"name": "Rating", "type": "rating", "options": {"max": 5}, "required": 0}
+                        ]
+                    },
+                    "Travel": {
+                        "tiers": ["visited", "stayed overnight", "want to visit"],
+                        "entry_term": "place",
+                        "observation_term": "visit",
+                        "default_fields": [
+                            {"name": "Country", "type": "text", "required": 0},
+                            {"name": "City", "type": "text", "required": 0},
+                            {"name": "Duration", "type": "text", "required": 0},
+                            {"name": "Rating", "type": "rating", "options": {"max": 5}, "required": 0}
+                        ]
+                    },
+                    "Foods": {
+                        "tiers": ["tried", "cooked", "want to try"],
+                        "entry_term": "dish",
+                        "observation_term": "tasting",
+                        "default_fields": [
+                            {"name": "Cuisine", "type": "text", "required": 0},
+                            {"name": "Ingredients", "type": "text", "required": 0},
+                            {"name": "Restaurant", "type": "text", "required": 0},
+                            {"name": "Rating", "type": "rating", "options": {"max": 5}, "required": 0}
+                        ]
+                    }
                 }
             }
         }
@@ -154,3 +213,75 @@ class ConfigManager:
             str: UI color theme
         """
         return self.get_config("ui", "color_theme") or "blue"
+        
+    def get_lifelist_type_template(self, type_name: str) -> Dict[str, Any]:
+        """
+        Get template configuration for a lifelist type
+
+        Args:
+            type_name: Name of the lifelist type
+
+        Returns:
+            dict: Template configuration
+        """
+        templates = self.get_config("lifelist_types", "templates")
+        if templates and type_name in templates:
+            return templates[type_name]
+        return {
+            "tiers": ["owned", "wanted"],
+            "entry_term": "item",
+            "observation_term": "entry",
+            "default_fields": []
+        }
+        
+    def get_entry_term(self, type_name: str) -> str:
+        """
+        Get the term used for entries in this lifelist type
+
+        Args:
+            type_name: Name of the lifelist type
+
+        Returns:
+            str: Term for entries (e.g., "species", "book", "movie")
+        """
+        template = self.get_lifelist_type_template(type_name)
+        return template.get("entry_term", "item")
+        
+    def get_observation_term(self, type_name: str) -> str:
+        """
+        Get the term used for observations in this lifelist type
+
+        Args:
+            type_name: Name of the lifelist type
+
+        Returns:
+            str: Term for observations (e.g., "sighting", "reading", "viewing")
+        """
+        template = self.get_lifelist_type_template(type_name)
+        return template.get("observation_term", "entry")
+        
+    def get_default_tiers(self, type_name: str) -> List[str]:
+        """
+        Get default tiers for a lifelist type
+
+        Args:
+            type_name: Name of the lifelist type
+
+        Returns:
+            list: Default tier names
+        """
+        template = self.get_lifelist_type_template(type_name)
+        return template.get("tiers", ["owned", "wanted"])
+        
+    def get_default_fields(self, type_name: str) -> List[Dict[str, Any]]:
+        """
+        Get default custom fields for a lifelist type
+
+        Args:
+            type_name: Name of the lifelist type
+
+        Returns:
+            list: Default field definitions
+        """
+        template = self.get_lifelist_type_template(type_name)
+        return template.get("default_fields", [])

@@ -2,7 +2,7 @@
 NavigationController - Handles view transitions and UI component coordination
 """
 import tkinter as tk
-from typing import Optional, Type
+from typing import Optional, Type, Dict, Any, Callable
 
 
 class NavigationController:
@@ -105,14 +105,14 @@ class NavigationController:
 
     def show_observation_form(self, lifelist_id: Optional[int] = None,
                               observation_id: Optional[int] = None,
-                              species_name: Optional[str] = None) -> None:
+                              entry_name: Optional[str] = None) -> None:
         """
         Show the observation form for adding or editing an observation
 
         Args:
             lifelist_id: ID of the lifelist (defaults to current)
             observation_id: ID of the observation to edit (None for new)
-            species_name: Optional species name to pre-fill
+            entry_name: Optional entry name to pre-fill
         """
         if lifelist_id is None:
             lifelist_id = self.app_state.get_current_lifelist_id()
@@ -121,12 +121,22 @@ class NavigationController:
             self.app_state.set_current_observation(observation_id)
 
         self.show_view('observation_form', lifelist_id=lifelist_id,
-                       observation_id=observation_id, species_name=species_name)
+                       observation_id=observation_id, entry_name=entry_name)
 
-    def show_taxonomy_manager(self):
-        """Show the taxonomy manager dialog"""
-        if hasattr(self.controller, 'taxonomy_manager'):
-            self.controller.taxonomy_manager.show_dialog()
+    def show_classification_manager(self) -> None:
+        """Show the classification manager dialog"""
+        if hasattr(self, 'classification_manager'):
+            self.classification_manager.show_dialog()
+
+    def show_lifelist_wizard(self, callback: Optional[Callable] = None) -> None:
+        """
+        Show the lifelist creation wizard
+
+        Args:
+            callback: Optional callback function to call after lifelist creation
+        """
+        from ui.lifelist_wizard import LifelistWizard
+        LifelistWizard(self.root, self, callback)
 
     def show_welcome(self) -> None:
         """Show the welcome screen"""

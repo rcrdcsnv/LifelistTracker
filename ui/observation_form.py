@@ -4,6 +4,7 @@ Observation form - Add and edit observations
 import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+import json
 
 from database_factory import DatabaseFactory
 from models.photo_utils import PhotoUtils
@@ -40,7 +41,7 @@ class ObservationForm:
         self.suggestions = []
 
         # Form widgets references
-        self.species_entry = None
+        self.entry_entry = None
         self.date_entry = None
         self.location_entry = None
         self.lat_entry = None
@@ -51,14 +52,14 @@ class ObservationForm:
         self.suggestion_frame = None
         self.photos_display_frame = None
 
-    def show(self, lifelist_id=None, observation_id=None, species_name=None, **kwargs):
+    def show(self, lifelist_id=None, observation_id=None, entry_name=None, **kwargs):
         """
         Display the observation form for adding or editing an observation
 
         Args:
             lifelist_id: ID of the lifelist
             observation_id: ID of the observation to edit, or None for a new observation
-            species_name: Optional species name to pre-fill
+            entry_name: Optional entry name to pre-fill
             **kwargs: Additional arguments
         """
         # Use current lifelist_id if not provided
@@ -79,6 +80,10 @@ class ObservationForm:
         for widget in self.content_frame.winfo_children():
             widget.destroy()
 
+        # Get entry and observation terms for this lifelist type
+        entry_term = self.app_state.get_entry_term()
+        observation_term = self.app_state.get_observation_term()
+
         # Create the form container
         form_container = ctk.CTkFrame(self.content_frame)
         form_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -87,7 +92,7 @@ class ObservationForm:
         canvas, form_frame = create_scrollable_container(form_container)
 
         # Form title
-        title_text = "Edit Observation" if observation_id else "Add New Observation"
+        title_text = f"Edit {observation_term.capitalize()}" if observation_id else f"Add New {observation_term.capitalize()}"
         title_label = ctk.CTkLabel(
             form_frame,
             text=title_text,
@@ -96,7 +101,7 @@ class ObservationForm:
         title_label.pack(pady=10)
 
         # Form fields
-        self._create_basic_fields(form_frame, species_name)
+        self._create_basic_fields(form_frame, entry_name, entry_term)
 
         # Custom fields
         self._create_custom_fields(form_frame)
@@ -114,51 +119,52 @@ class ObservationForm:
         if observation_id:
             self._load_observation_data(observation_id)
 
-    def _create_basic_fields(self, parent, species_name=None):
+    def _create_basic_fields(self, parent, entry_name=None, entry_term="item"):
         """
         Create the basic observation fields
 
         Args:
             parent: Parent widget
-            species_name: Optional species name to pre-fill
+            entry_name: Optional entry name to pre-fill
+            entry_term: Term used for entries in this lifelist
         """
         form_fields_frame = ctk.CTkFrame(parent)
         form_fields_frame.pack(fill=tk.X, padx=20, pady=10)
 
-        # Species field with auto-suggestion
-        species_frame = ctk.CTkFrame(form_fields_frame)
-        species_frame.pack(fill=tk.X, pady=5)
+        # Entry field with auto-suggestion
+        entry_frame = ctk.CTkFrame(form_fields_frame)
+        entry_frame.pack(fill=tk.X, pady=5)
 
-        ctk.CTkLabel(species_frame, text="Species Name:", width=150).pack(side=tk.LEFT, padx=5)
+        ctk.CTkLabel(entry_frame, text=f"{entry_term.capitalize()} Name:", width=150).pack(side=tk.LEFT, padx=5)
 
-        # Create a frame for the species input and suggestion list
-        species_input_frame = ctk.CTkFrame(species_frame)
-        species_input_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        # Create a frame for the entry input and suggestion list
+        entry_input_frame = ctk.CTkFrame(entry_frame)
+        entry_input_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
 
-        self.species_entry = ctk.CTkEntry(species_input_frame, width=300)
-        self.species_entry.pack(side=tk.TOP, fill=tk.X, pady=2)
+        self.entry_entry = ctk.CTkEntry(entry_input_frame, width=300)
+        self.entry_entry.pack(side=tk.TOP, fill=tk.X, pady=2)
 
-        if species_name:
-            self.species_entry.insert(0, species_name)
+        if entry_name:
+            self.entry_entry.insert(0, entry_name)
 
         # Suggestion listbox (hidden initially)
-        self.suggestion_frame = ctk.CTkFrame(species_input_frame)
+        self.suggestion_frame = ctk.CTkFrame(entry_input_frame)
         self.suggestion_list = tk.Listbox(self.suggestion_frame, bg="#2b2b2b", fg="white", height=5)
         self.suggestion_list.pack(fill=tk.BOTH, expand=True)
 
         # Bind events for auto-suggestion
-        self.species_entry.bind("<KeyRelease>", self._update_suggestions)
+        self.entry_entry.bind("<KeyRelease>", self._update_suggestions)
         self.suggestion_list.bind("<ButtonRelease-1>", self._select_suggestion)
         self.suggestion_list.bind("<Return>", self._select_suggestion)
 
-        # Add a button to manage taxonomies
-        taxonomy_btn = ctk.CTkButton(
-            species_frame,
+        # Add a button to manage classifications
+        manage_btn = ctk.CTkButton(
+            entry_frame,
             text="Manage",
             width=70,
-            command=self.controller.show_taxonomy_manager
+            command=self.controller.show_classification_manager
         )
-        taxonomy_btn.pack(side=tk.LEFT, padx=5)
+        manage_btn.pack(side=tk.LEFT, padx=5)
 
         # Date field
         date_frame, self.date_entry = create_labeled_entry(
@@ -187,7 +193,7 @@ class ObservationForm:
         ctk.CTkLabel(tier_frame, text="Tier:", width=150).pack(side=tk.LEFT, padx=5)
 
         tier_options = self.db.get_lifelist_tiers(self.current_lifelist_id)
-        self.tier_var = tk.StringVar(value=tier_options[0] if tier_options else "wild")
+        self.tier_var = tk.StringVar(value=tier_options[0] if tier_options else "owned")
 
         tier_dropdown = ctk.CTkComboBox(tier_frame, values=tier_options, variable=self.tier_var, width=300)
         tier_dropdown.pack(side=tk.LEFT, padx=5)
@@ -222,20 +228,164 @@ class ObservationForm:
         self.custom_field_entries = {}
 
         if custom_fields:
-            for field_id, field_name, field_type in custom_fields:
+            # Sort fields by display order
+            sorted_fields = sorted(custom_fields, key=lambda f: f[5])  # Sort by display_order
+
+            for field in sorted_fields:
+                field_id, field_name, field_type, field_options, is_required, display_order, options = field
+
+                # Create a frame for this field
                 field_frame = ctk.CTkFrame(custom_fields_frame)
                 field_frame.pack(fill=tk.X, pady=5)
 
-                ctk.CTkLabel(field_frame, text=f"{field_name}:", width=150).pack(side=tk.LEFT, padx=5)
+                # Add required indicator if field is required
+                field_label = f"{field_name}:" + (" *" if is_required else "")
 
-                if field_type == "boolean":
-                    field_entry = ctk.CTkCheckBox(field_frame, text="")
+                ctk.CTkLabel(field_frame, text=field_label, width=150).pack(side=tk.LEFT, padx=5)
+
+                # Create different input widgets based on field type
+                if field_type == "text":
+                    field_entry = ctk.CTkEntry(field_frame, width=300)
+                    field_entry.pack(side=tk.LEFT, padx=5)
+
+                elif field_type == "number":
+                    field_entry = ctk.CTkEntry(field_frame, width=300)
+                    field_entry.pack(side=tk.LEFT, padx=5)
+
                 elif field_type == "date":
                     field_entry = ctk.CTkEntry(field_frame, width=300, placeholder_text="YYYY-MM-DD")
-                else:
-                    field_entry = ctk.CTkEntry(field_frame, width=300)
+                    field_entry.pack(side=tk.LEFT, padx=5)
 
-                field_entry.pack(side=tk.LEFT, padx=5)
+                elif field_type == "boolean":
+                    field_entry = ctk.CTkCheckBox(field_frame, text="")
+                    field_entry.pack(side=tk.LEFT, padx=5)
+
+                elif field_type == "choice" and options:
+                    # Create dropdown with options
+                    choice_var = tk.StringVar()
+                    choice_options = [""]  # Add empty option
+
+                    for option_value, option_label, _ in options:
+                        display_text = option_label or option_value
+                        choice_options.append(display_text)
+
+                    field_entry = ctk.CTkComboBox(field_frame, values=choice_options, variable=choice_var, width=300)
+                    field_entry.pack(side=tk.LEFT, padx=5)
+
+                    # Store both the combobox and the variable
+                    self.custom_field_entries[field_id] = (field_entry, choice_var, options)
+                    continue  # Skip the default assignment at the end
+
+                elif field_type == "rating":
+                    # Parse options
+                    max_rating = 5
+                    if field_options:
+                        try:
+                            options_dict = json.loads(field_options) if isinstance(field_options, str) else field_options
+                            if "max" in options_dict:
+                                max_rating = int(options_dict["max"])
+                        except Exception:
+                            pass
+
+                    # Create a frame for rating stars
+                    rating_frame = ctk.CTkFrame(field_frame)
+                    rating_frame.pack(side=tk.LEFT, padx=5)
+
+                    rating_var = tk.IntVar(value=0)
+                    rating_buttons = []
+
+                    for i in range(1, max_rating + 1):
+                        star_btn = ctk.CTkButton(
+                            rating_frame,
+                            text="★",
+                            width=30,
+                            height=30,
+                            fg_color="gray30",
+                            command=lambda v=i: rating_var.set(v)
+                        )
+                        star_btn.pack(side=tk.LEFT, padx=1)
+                        rating_buttons.append(star_btn)
+
+                    # Update button appearance when rating changes
+                    def update_rating_buttons(*args):
+                        rating = rating_var.get()
+                        for i, btn in enumerate(rating_buttons):
+                            if i < rating:
+                                btn.configure(fg_color="gold", text_color="black")
+                            else:
+                                btn.configure(fg_color="gray30", text_color="white")
+
+                    rating_var.trace_add("write", update_rating_buttons)
+
+                    # Store both the buttons and the variable
+                    self.custom_field_entries[field_id] = (rating_buttons, rating_var)
+                    continue  # Skip the default assignment at the end
+
+                elif field_type == "color":
+                    # Parse options
+                    colors = []
+                    allow_custom = True
+
+                    if field_options:
+                        try:
+                            options_dict = json.loads(field_options) if isinstance(field_options, str) else field_options
+                            if "colors" in options_dict:
+                                colors = options_dict["colors"]
+                            if "allow_custom" in options_dict:
+                                allow_custom = options_dict["allow_custom"]
+                        except Exception:
+                            pass
+
+                    # Create a frame for color selection
+                    color_frame = ctk.CTkFrame(field_frame)
+                    color_frame.pack(side=tk.LEFT, padx=5)
+
+                    color_var = tk.StringVar(value="")
+
+                    # Add color swatches if specified
+                    if colors:
+                        for color in colors[:6]:  # Limit to 6 predefined colors
+                            color_btn = ctk.CTkButton(
+                                color_frame,
+                                text="",
+                                width=30,
+                                height=30,
+                                fg_color=color,
+                                command=lambda c=color: color_var.set(c)
+                            )
+                            color_btn.pack(side=tk.LEFT, padx=1)
+
+                    # Add custom color input if allowed
+                    if allow_custom:
+                        custom_entry = ctk.CTkEntry(color_frame, width=100, placeholder_text="#RRGGBB")
+                        custom_entry.pack(side=tk.LEFT, padx=5)
+
+                        def set_custom_color():
+                            color = custom_entry.get().strip()
+                            if color:
+                                color_var.set(color)
+
+                        apply_btn = ctk.CTkButton(
+                            color_frame,
+                            text="Apply",
+                            width=60,
+                            command=set_custom_color
+                        )
+                        apply_btn.pack(side=tk.LEFT, padx=2)
+
+                        # Store the components
+                        self.custom_field_entries[field_id] = (custom_entry, color_var)
+                    else:
+                        # Just store the variable
+                        self.custom_field_entries[field_id] = (None, color_var)
+
+                    continue  # Skip the default assignment at the end
+
+                else:
+                    # Default to text input for unknown types
+                    field_entry = ctk.CTkEntry(field_frame, width=300)
+                    field_entry.pack(side=tk.LEFT, padx=5)
+
                 self.custom_field_entries[field_id] = field_entry
         else:
             no_fields_label = ctk.CTkLabel(
@@ -268,6 +418,21 @@ class ObservationForm:
         ctk.CTkLabel(tag_entry_frame, text="Add Tag:", width=150).pack(side=tk.LEFT, padx=5)
         self.tag_entry = ctk.CTkEntry(tag_entry_frame, width=200)
         self.tag_entry.pack(side=tk.LEFT, padx=5)
+
+        # Tag category dropdown
+        self.tag_category_var = tk.StringVar(value="")
+
+        # Get existing tag categories
+        all_tags = self.db.get_all_tags()
+        if categories := list({tag[2] for tag in all_tags if tag[2]}):
+            ctk.CTkLabel(tag_entry_frame, text="Category:", width=80).pack(side=tk.LEFT, padx=5)
+            category_dropdown = ctk.CTkComboBox(
+                tag_entry_frame, 
+                values=[""] + sorted(categories),
+                variable=self.tag_category_var,
+                width=120
+            )
+            category_dropdown.pack(side=tk.LEFT, padx=5)
 
         # Tag display area
         self.tag_labels_frame = ctk.CTkFrame(tags_frame)
@@ -333,7 +498,7 @@ class ObservationForm:
         if self.current_observation_id:
             delete_btn = ctk.CTkButton(
                 buttons_frame,
-                text="Delete Observation",
+                text="Delete",
                 fg_color="red3",
                 hover_color="red4",
                 command=self._delete_observation
@@ -349,13 +514,13 @@ class ObservationForm:
 
     def _update_suggestions(self, event):
         """
-        Update species name suggestions based on input
+        Update entry name suggestions based on input
 
         Args:
             event: KeyRelease event
         """
         # Get the current text
-        text = self.species_entry.get().strip()
+        text = self.entry_entry.get().strip()
 
         if not text or len(text) < 2:
             if self.showing_suggestions:
@@ -363,20 +528,22 @@ class ObservationForm:
                 self.showing_suggestions = False
             return
 
-        if active_tax := self.db.get_active_taxonomy(self.current_lifelist_id):
-            if results := self.db.search_taxonomy(active_tax[0], text):
+        if active_class := self.db.get_active_classification(
+            self.current_lifelist_id
+        ):
+            if results := self.db.search_classification(active_class[0], text):
                 # Clear current suggestions
                 self.suggestion_list.delete(0, tk.END)
                 self.suggestions = []
 
                 # Add new suggestions
-                for _, scientific_name, common_name, family, _, _ in results:
-                    display_name = scientific_name
-                    if common_name:
-                        display_name = f"{common_name} ({scientific_name})"
+                for _, name, alternate_name, category in results:
+                    display_name = name
+                    if alternate_name:
+                        display_name = f"{alternate_name} ({name})"
 
                     self.suggestion_list.insert(tk.END, display_name)
-                    self.suggestions.append((scientific_name, common_name))
+                    self.suggestions.append((name, alternate_name))
 
                 # Show the suggestion frame if not already showing
                 if not self.showing_suggestions:
@@ -402,38 +569,48 @@ class ObservationForm:
         # Get selected suggestion
         try:
             index = self.suggestion_list.curselection()[0]
-            scientific_name, common_name = self.suggestions[index]
+            name, alternate_name = self.suggestions[index]
 
-            # Set the species entry to the selected suggestion
-            if common_name:
-                self.species_entry.delete(0, tk.END)
-                self.species_entry.insert(0, common_name)
+            # Set the entry entry to the selected suggestion
+            if alternate_name:
+                self.entry_entry.delete(0, tk.END)
+                self.entry_entry.insert(0, alternate_name)
             else:
-                self.species_entry.delete(0, tk.END)
-                self.species_entry.insert(0, scientific_name)
+                self.entry_entry.delete(0, tk.END)
+                self.entry_entry.insert(0, name)
 
             # Hide suggestions
             self.suggestion_frame.pack_forget()
             self.showing_suggestions = False
-        except:
+        except Exception:
             pass
 
     def _add_tag(self):
         """Add a tag to the current tags list"""
         tag_name = self.tag_entry.get().strip()
-        if tag_name and tag_name not in self.current_tags:
-            self.current_tags.append(tag_name)
-            self.tag_entry.delete(0, tk.END)
-            self._update_tag_display()
+        tag_category = self.tag_category_var.get().strip() if hasattr(self, 'tag_category_var') else None
 
-    def _remove_tag(self, tag_name):
+        if tag_name:
+            # Check if this tag (with same category) is already in the list
+            exists = any(
+                existing_tag[0] == tag_name and existing_tag[1] == tag_category
+                for existing_tag in self.current_tags
+            )
+            if not exists:
+                self.current_tags.append((tag_name, tag_category))
+                self.tag_entry.delete(0, tk.END)
+                if hasattr(self, 'tag_category_var'):
+                    self.tag_category_var.set("")
+                self._update_tag_display()
+
+    def _remove_tag(self, tag_info):
         """
         Remove a tag from the current tags list
 
         Args:
-            tag_name: Name of the tag to remove
+            tag_info: Tuple of (tag_name, tag_category)
         """
-        self.current_tags.remove(tag_name)
+        self.current_tags.remove(tag_info)
         self._update_tag_display()
 
     def _update_tag_display(self):
@@ -442,22 +619,45 @@ class ObservationForm:
         for widget in self.tag_labels_frame.winfo_children():
             widget.destroy()
 
-        # Add tag labels
-        for tag_name in self.current_tags:
-            tag_label_frame = ctk.CTkFrame(self.tag_labels_frame)
-            tag_label_frame.pack(side=tk.LEFT, padx=2, pady=2)
+        # Add tag labels, grouped by category
+        tag_by_category = {}
+        for tag_name, category in self.current_tags:
+            if category not in tag_by_category:
+                tag_by_category[category] = []
+            tag_by_category[category].append(tag_name)
+            
+        # Create a frame for each category
+        for category, tags in tag_by_category.items():
+            category_frame = ctk.CTkFrame(self.tag_labels_frame)
+            category_frame.pack(fill=tk.X, pady=2)
+            
+            # Add category label if it exists
+            if category:
+                ctk.CTkLabel(
+                    category_frame, 
+                    text=category, 
+                    font=ctk.CTkFont(size=12, weight="bold")
+                ).pack(anchor="w", padx=5, pady=(5, 0))
+                
+            # Add tags for this category
+            tags_container = ctk.CTkFrame(category_frame)
+            tags_container.pack(fill=tk.X, padx=5, pady=5)
+                
+            for tag_name in tags:
+                tag_label_frame = ctk.CTkFrame(tags_container)
+                tag_label_frame.pack(side=tk.LEFT, padx=2, pady=2)
 
-            tag_label = ctk.CTkLabel(tag_label_frame, text=tag_name, padx=5)
-            tag_label.pack(side=tk.LEFT)
+                tag_label = ctk.CTkLabel(tag_label_frame, text=tag_name, padx=5)
+                tag_label.pack(side=tk.LEFT)
 
-            remove_btn = ctk.CTkButton(
-                tag_label_frame,
-                text="✕",
-                width=20,
-                height=20,
-                command=lambda t=tag_name: self._remove_tag(t)
-            )
-            remove_btn.pack(side=tk.LEFT)
+                remove_btn = ctk.CTkButton(
+                    tag_label_frame,
+                    text="✕",
+                    width=20,
+                    height=20,
+                    command=lambda t=(tag_name, category): self._remove_tag(t)
+                )
+                remove_btn.pack(side=tk.LEFT)
 
     def _add_photos(self):
         """Add photos to the observation"""
@@ -467,12 +667,12 @@ class ObservationForm:
         if file_paths := filedialog.askopenfilenames(
             title="Select Photos", filetypes=filetypes
         ):
-            # Check if this species already has a primary photo
-            species_name = self.species_entry.get().strip()
+            # Check if this entry already has a primary photo
+            entry_name = self.entry_entry.get().strip()
             has_primary = False
 
-            if species_name and self.current_lifelist_id:
-                has_primary = self.db.species_has_primary_photo(self.current_lifelist_id, species_name)
+            if entry_name and self.current_lifelist_id:
+                has_primary = self.db.entry_has_primary_photo(self.current_lifelist_id, entry_name)
 
             # Also check if any photos in the current list are marked as primary
             current_has_primary = any(p.get("is_primary", False) for p in self.photos)
@@ -487,9 +687,8 @@ class ObservationForm:
                     thumbnail = PhotoUtils.resize_image_for_thumbnail(path)
 
                     # Add to photos list - only set as primary if there's no existing primary
-                    # for this species and no primary in the current list
-                    self.photos.append(
-                        {
+                    # for this entry and no primary in the current list
+                    self.photos.append({
                             "path": path,
                             "is_primary": not has_primary
                             and not current_has_primary
@@ -498,8 +697,7 @@ class ObservationForm:
                             "latitude": lat,
                             "longitude": lon,
                             "taken_date": taken_date,
-                        }
-                    )
+                    })
 
             self._update_photos_display()
 
@@ -514,10 +712,11 @@ class ObservationForm:
             self.photos[i]["is_primary"] = (i == index)
         self._update_photos_display()
 
-        # Show info about species-level changes
+        # Show info about entry-level changes
+        entry_term = self.app_state.get_entry_term()
         messagebox.showinfo(
             "Primary Photo Set",
-            "This photo will be set as the primary photo for all observations of this species when saved."
+            f"This photo will be set as the primary photo for all observations of this {entry_term} when saved."
         )
 
     def _remove_photo(self, index):
@@ -586,7 +785,7 @@ class ObservationForm:
         observation, custom_field_values, obs_tags = db.get_observation_details(observation_id)
 
         if observation:
-            self.species_entry.insert(0, observation[2] or "")  # species_name
+            self.entry_entry.insert(0, observation[2] or "")  # entry_name
             if observation[3]:  # observation_date
                 self.date_entry.insert(0, observation[3])
             if observation[4]:  # location
@@ -603,20 +802,58 @@ class ObservationForm:
         # Load custom field values
         if custom_field_values:
             for field_name, field_type, value in custom_field_values:
+                # Find the field in custom_field_entries
                 for field_id, entry in self.custom_field_entries.items():
-                    if self.db.cursor.execute(
-                            "SELECT field_name FROM custom_fields WHERE id = ?",
-                            (field_id,)
-                    ).fetchone()[0] == field_name:
-                        if field_type == "boolean":
-                            entry.select() if value == "1" else entry.deselect()
-                        else:
-                            entry.insert(0, value or "")
+                    field_info = self.db.cursor.execute(
+                        "SELECT field_name, field_type FROM custom_fields WHERE id = ?",
+                        (field_id,)
+                    ).fetchone()
+                    
+                    if not field_info or field_info[0] != field_name:
+                        continue
+                        
+                    # Handle different field types
+                    field_type = field_info[1]
+                    
+                    if field_type == "boolean":
+                        if isinstance(entry, ctk.CTkCheckBox):
+                            if value == "1":
+                                entry.select() 
+                            else:
+                                entry.deselect()
+                    elif field_type == "choice":
+                        # For choice fields, entry is a tuple: (combobox, variable, options)
+                        combobox, variable, options = entry
+                        if value:
+                            # Find the display text for this value
+                            display_text = value
+                            for option_value, option_label, _ in options:
+                                if option_value == value:
+                                    display_text = option_label or option_value
+                                    break
+                            variable.set(display_text)
+                    elif field_type == "rating":
+                        # For rating fields, entry is a tuple: (buttons, variable)
+                        buttons, variable = entry
+                        if value:
+                            try:
+                                rating = int(value)
+                                variable.set(rating)
+                            except ValueError:
+                                pass
+                    elif field_type == "color":
+                        # For color fields, entry might be a tuple: (entry, variable) or just variable
+                        if isinstance(entry, tuple):
+                            _, variable = entry
+                            variable.set(value or "")
+                    else:
+                        # For text, number, date fields
+                        entry.insert(0, value or "")
 
         # Load tags
         if obs_tags:
-            for tag_id, tag_name in obs_tags:
-                self.current_tags.append(tag_name)
+            for tag_id, tag_name, tag_category in obs_tags:
+                self.current_tags.append((tag_name, tag_category))
             self._update_tag_display()
 
         # Load photos
@@ -647,10 +884,55 @@ class ObservationForm:
         Returns:
             bool: True if fields are valid, False otherwise
         """
-        species = self.species_entry.get().strip()
-        if not species:
-            messagebox.showerror("Error", "Species name is required")
+        entry = self.entry_entry.get().strip()
+        if not entry:
+            entry_term = self.app_state.get_entry_term()
+            messagebox.showerror("Error", f"{entry_term.capitalize()} name is required")
             return False
+            
+        # Validate required custom fields
+        for field_id, entry in self.custom_field_entries.items():
+            # Get field info
+            field_info = self.db.cursor.execute(
+                "SELECT field_name, field_type, is_required FROM custom_fields WHERE id = ?",
+                (field_id,)
+            ).fetchone()
+            
+            if not field_info or not field_info[2]:  # not required
+                continue
+                
+            field_name = field_info[0]
+            field_type = field_info[1]
+            
+            # Check if field has a value
+            if field_type == "boolean":
+                # Boolean fields always have a value (True/False)
+                continue
+            elif field_type == "choice":
+                # For choice fields, entry is a tuple: (combobox, variable, options)
+                _, variable, _ = entry
+                if not variable.get():
+                    messagebox.showerror("Error", f"'{field_name}' is required")
+                    return False
+            elif field_type == "rating":
+                # For rating fields, entry is a tuple: (buttons, variable)
+                _, variable = entry
+                if variable.get() <= 0:
+                    messagebox.showerror("Error", f"'{field_name}' is required")
+                    return False
+            elif field_type == "color":
+                # For color fields, entry might be a tuple: (entry, variable) or just variable
+                if isinstance(entry, tuple):
+                    _, variable = entry
+                    if not variable.get():
+                        messagebox.showerror("Error", f"'{field_name}' is required")
+                        return False
+            else:
+                # For text, number, date fields
+                if not entry.get().strip():
+                    messagebox.showerror("Error", f"'{field_name}' is required")
+                    return False
+                    
         return True
 
     def _save_observation(self):
@@ -659,7 +941,7 @@ class ObservationForm:
             return
 
         # Get basic fields
-        species = self.species_entry.get().strip()
+        entry_name = self.entry_entry.get().strip()
         observation_date = self.date_entry.get().strip() or None
         location = self.location_entry.get().strip() or None
         latitude = self.lat_entry.get().strip() or None
@@ -688,13 +970,13 @@ class ObservationForm:
 
             # Define all operations to perform in the transaction
             def save_operations():
-                species_primary_set = False
+                entry_primary_set = False
 
                 if self.current_observation_id:
                     # Update existing observation
                     success = db.update_observation(
                         self.current_observation_id,
-                        species,
+                        entry_name,
                         observation_date,
                         location,
                         latitude,
@@ -723,7 +1005,7 @@ class ObservationForm:
                     # Create new observation
                     obs_id = db.add_observation(
                         self.current_lifelist_id,
-                        species,
+                        entry_name,
                         observation_date,
                         location,
                         latitude,
@@ -737,9 +1019,48 @@ class ObservationForm:
 
                 # Save custom field values
                 for field_id, field_entry in self.custom_field_entries.items():
-                    if isinstance(field_entry, ctk.CTkCheckBox):
-                        value = "1" if field_entry.get() else "0"
+                    # Get field type
+                    field_info = db.cursor.execute(
+                        "SELECT field_type FROM custom_fields WHERE id = ?",
+                        (field_id,)
+                    ).fetchone()
+
+                    if not field_info:
+                        continue
+
+                    field_type = field_info[0]
+                    value = None
+
+                    # Get value based on field type
+                    if field_type == "boolean":
+                        if isinstance(field_entry, ctk.CTkCheckBox):
+                            value = "1" if field_entry.get() else "0"
+                        else:
+                            continue
+                    elif field_type == "choice":
+                        # For choice fields, get the actual value, not the display text
+                        combobox, variable, options = field_entry
+                        display_text = variable.get()
+
+                        if display_text:
+                            # Find the value for this display text
+                            for option_value, option_label, _ in options:
+                                if option_label == display_text or option_value == display_text:
+                                    value = option_value
+                                    break
+                    elif field_type == "rating":
+                        # For rating fields, get the rating value
+                        buttons, variable = field_entry
+                        rating = variable.get()
+                        if rating > 0:
+                            value = str(rating)
+                    elif field_type == "color":
+                        # For color fields, get the color value
+                        if isinstance(field_entry, tuple):
+                            _, variable = field_entry
+                            value = variable.get()
                     else:
+                        # For text, number, date fields
                         value = field_entry.get().strip()
 
                     # Delete any existing values
@@ -748,7 +1069,7 @@ class ObservationForm:
                         (obs_id, field_id)
                     )
 
-                    # Insert new value
+                    # Insert new value if not empty
                     if value:
                         db.cursor.execute(
                             "INSERT INTO observation_custom_fields (observation_id, field_id, value) VALUES (?, ?, ?)",
@@ -763,14 +1084,14 @@ class ObservationForm:
                 )
 
                 # Add the current tags
-                for tag_name in self.current_tags:
-                    tag_id = db.add_tag(tag_name)
+                for tag_name, tag_category in self.current_tags:
+                    tag_id = db.add_tag(tag_name, tag_category)
                     db.add_tag_to_observation(obs_id, tag_id)
 
                 # Save photos
                 for photo in self.photos:
                     if photo.get("is_primary", False):
-                        species_primary_set = True
+                        entry_primary_set = True
 
                     # New or existing photo handling
                     if "id" not in photo:
@@ -788,16 +1109,17 @@ class ObservationForm:
                         if photo["is_primary"]:
                             db.set_primary_photo(photo["id"], obs_id)
 
-                return species_primary_set
+                return entry_primary_set
 
             # Execute all operations as a single transaction
-            species_primary_set = db.execute_transaction(save_operations)
+            entry_primary_set = db.execute_transaction(save_operations)
 
             # Provide feedback only once if any photo was set as primary
-            if species_primary_set:
+            if entry_primary_set:
+                entry_term = self.app_state.get_entry_term()
                 messagebox.showinfo(
                     "Primary Photo Updated",
-                    "The selected primary photo will now appear for all observations of this species."
+                    f"The selected primary photo will now appear for all observations of this {entry_term}."
                 )
 
             # Return to lifelist view
@@ -811,9 +1133,10 @@ class ObservationForm:
         if not self.current_observation_id:
             return
 
+        observation_term = self.app_state.get_observation_term()
         if confirm := messagebox.askyesno(
             "Confirm Delete",
-            "Are you sure you want to delete this observation? This action cannot be undone.",
+            f"Are you sure you want to delete this {observation_term}? This action cannot be undone.",
         ):
             try:
                 # Get database without context manager
@@ -830,7 +1153,7 @@ class ObservationForm:
                     # Return to the lifelist view
                     self.controller.open_lifelist(self.current_lifelist_id)
                 else:
-                    messagebox.showerror("Error", "Failed to delete the observation")
+                    messagebox.showerror("Error", f"Failed to delete the {observation_term}")
 
             except Exception as e:
                 messagebox.showerror("Error", f"An error occurred: {str(e)}")

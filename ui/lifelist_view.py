@@ -71,6 +71,10 @@ class LifelistView:
         # Update application state
         self.app_state.set_current_lifelist(lifelist_id)
 
+        # Get entry and observation terms for this lifelist type
+        entry_term = self.app_state.get_entry_term()
+        observation_term = self.app_state.get_observation_term()
+
         # Clear the content area
         for widget in self.content_frame.winfo_children():
             widget.destroy()
@@ -86,7 +90,7 @@ class LifelistView:
         self._create_filter_section(lifelist_id)
 
         # Observation list
-        self._create_observation_list()
+        self._create_observation_list(entry_term)
 
         # Load observations
         self.load_observations()
@@ -103,6 +107,18 @@ class LifelistView:
         )
         title_label.pack(side=tk.LEFT, padx=10)
 
+        # Get lifelist type name
+        _, lifelist_type = self.app_state.get_lifelist_info()
+        if lifelist_type:
+            type_label = ctk.CTkLabel(
+                header_frame,
+                text=f"Type: {lifelist_type}",
+                font=ctk.CTkFont(size=12),
+                fg_color="gray30",
+                corner_radius=5
+            )
+            type_label.pack(side=tk.LEFT, padx=5)
+
         # Add the map button
         map_btn = ctk.CTkButton(
             header_frame,
@@ -118,16 +134,19 @@ class LifelistView:
         )
         edit_tiers_btn.pack(side=tk.RIGHT, padx=5)
 
-        taxonomy_btn = ctk.CTkButton(
+        # The Manage Classifications button uses the new name
+        classification_btn = ctk.CTkButton(
             header_frame,
-            text="Manage Taxonomies",
-            command=self.controller.show_taxonomy_manager
+            text="Manage Classifications",
+            command=self.controller.show_classification_manager
         )
-        taxonomy_btn.pack(side=tk.RIGHT, padx=5)
+        classification_btn.pack(side=tk.RIGHT, padx=5)
 
+        # Use the appropriate term for observations based on lifelist type
+        observation_term = self.app_state.get_observation_term()
         add_btn = ctk.CTkButton(
             header_frame,
-            text="Add Observation",
+            text=f"Add {observation_term.capitalize()}",
             command=self.add_new_observation
         )
         add_btn.pack(side=tk.RIGHT, padx=5)
@@ -181,8 +200,13 @@ class LifelistView:
         )
         apply_btn.pack(side=tk.RIGHT, padx=5)
 
-    def _create_observation_list(self):
-        """Create the scrollable observation list container"""
+    def _create_observation_list(self, entry_term):
+        """
+        Create the scrollable observation list container
+
+        Args:
+            entry_term: Term used for entries in this lifelist
+        """
         list_frame = ctk.CTkFrame(self.lifelist_frame)
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
@@ -193,7 +217,8 @@ class LifelistView:
         header = ctk.CTkFrame(self.observations_container)
         header.pack(fill=tk.X, padx=5, pady=5)
 
-        ctk.CTkLabel(header, text="Species", width=200).pack(side=tk.LEFT, padx=5)
+        # Use entry_term for the header
+        ctk.CTkLabel(header, text=entry_term.capitalize(), width=200).pack(side=tk.LEFT, padx=5)
         ctk.CTkLabel(header, text="Date", width=100).pack(side=tk.LEFT, padx=5)
         ctk.CTkLabel(header, text="Location", width=200).pack(side=tk.LEFT, padx=5)
         ctk.CTkLabel(header, text="Tier", width=100).pack(side=tk.LEFT, padx=5)
@@ -231,39 +256,43 @@ class LifelistView:
             search_term=search_term
         )
 
+        # Get lifelist type-specific terminology
+        entry_term = self.app_state.get_entry_term()
+        observation_term = self.app_state.get_observation_term()
+
         if not observations:
             no_results = ctk.CTkLabel(
                 self.observations_container,
-                text="No observations found",
+                text=f"No {observation_term}s found",
                 font=ctk.CTkFont(size=14)
             )
             no_results.pack(pady=20)
             return
 
-        # Group observations by species
-        species_groups = self._group_observations_by_species(observations)
+        # Group observations by entry
+        entry_groups = self._group_observations_by_entry(observations)
 
-        # Add each species group to the list
-        for species_name, data in species_groups.items():
-            self._add_species_row(species_name, data)
+        # Add each entry group to the list
+        for entry_name, data in entry_groups.items():
+            self._add_entry_row(entry_name, data, entry_term, observation_term)
 
-    def _group_observations_by_species(self, observations):
+    def _group_observations_by_entry(self, observations):
         """
-        Group observations by species name
+        Group observations by entry name
 
         Args:
             observations: List of observation records
 
         Returns:
-            dict: Dictionary of species groups
+            dict: Dictionary of entry groups
         """
-        species_groups = {}
+        entry_groups = {}
         for obs in observations:
-            obs_id, species_name, obs_date, location, tier = obs
+            obs_id, entry_name, obs_date, location, tier = obs
 
-            # If we haven't seen this species yet, create a new entry
-            if species_name not in species_groups:
-                species_groups[species_name] = {
+            # If we haven't seen this entry yet, create a new entry
+            if entry_name not in entry_groups:
+                entry_groups[entry_name] = {
                     "latest_id": obs_id,
                     "date": obs_date,
                     "location": location,
@@ -272,33 +301,50 @@ class LifelistView:
                 }
             else:
                 # Add this observation ID to the list
-                species_groups[species_name]["observation_ids"].append(obs_id)
+                entry_groups[entry_name]["observation_ids"].append(obs_id)
 
                 # Update date if this observation is more recent
-                if not species_groups[species_name]["date"] or (obs_date and (
-                        not species_groups[species_name]["date"] or obs_date > species_groups[species_name]["date"])):
-                    species_groups[species_name]["date"] = obs_date
-                    species_groups[species_name]["location"] = location
-                    species_groups[species_name]["latest_id"] = obs_id
+                if (
+                    not entry_groups[entry_name]["date"]
+                    or obs_date
+                    and obs_date > entry_groups[entry_name]["date"]
+                ):
+                    entry_groups[entry_name]["date"] = obs_date
+                    entry_groups[entry_name]["location"] = location
+                    entry_groups[entry_name]["latest_id"] = obs_id
 
                 # Update tier if this tier is "higher" in precedence
-                # Tier precedence: wild > heard > captive
-                tier_precedence = {"wild": 3, "heard": 2, "captive": 1}
-                current_tier_value = tier_precedence.get(species_groups[species_name]["tier"], 0)
-                new_tier_value = tier_precedence.get(tier, 0)
+                # Get tiers in order of precedence
+                lifelist_id = self.app_state.get_current_lifelist_id()
+                tier_precedence = self.db.get_lifelist_tiers(lifelist_id)
 
-                if new_tier_value > current_tier_value:
-                    species_groups[species_name]["tier"] = tier
+                # Find indices for current and new tiers
+                current_tier = entry_groups[entry_name]["tier"]
+                try:
+                    current_idx = tier_precedence.index(current_tier) if current_tier in tier_precedence else len(tier_precedence)
+                except ValueError:
+                    current_idx = len(tier_precedence)
 
-        return species_groups
+                try:
+                    new_idx = tier_precedence.index(tier) if tier in tier_precedence else len(tier_precedence)
+                except ValueError:
+                    new_idx = len(tier_precedence)
 
-    def _add_species_row(self, species_name, data):
+                # Lower index means higher precedence
+                if new_idx < current_idx:
+                    entry_groups[entry_name]["tier"] = tier
+
+        return entry_groups
+
+    def _add_entry_row(self, entry_name, data, entry_term, observation_term):
         """
-        Add a row for a species group to the observation list
+        Add a row for an entry group to the observation list
 
         Args:
-            species_name: Name of the species
-            data: Dictionary with species data
+            entry_name: Name of the entry
+            data: Dictionary with entry data
+            entry_term: Term used for entries in this lifelist
+            observation_term: Term used for observations in this lifelist
         """
         obs_id = data["latest_id"]
         obs_date = data["date"]
@@ -310,32 +356,32 @@ class LifelistView:
         item = ctk.CTkFrame(self.observations_container)
         item.pack(fill=tk.X, padx=5, pady=2)
 
-        # Try to get the primary photo for this species
+        # Try to get the primary photo for this entry
         photo_thumbnail = None
-        species_primary = self.db.get_species_primary_photo(lifelist_id, species_name)
+        entry_primary = self.db.get_entry_primary_photo(lifelist_id, entry_name)
 
-        if species_primary:
+        if entry_primary:
             if thumbnail := PhotoUtils.resize_image_for_thumbnail(
-                species_primary[1]
+                entry_primary[1]
             ):
                 photo_thumbnail = thumbnail
 
-        # Species name (with thumbnail if available)
-        species_frame = ctk.CTkFrame(item)
-        species_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+        # Entry name (with thumbnail if available)
+        entry_frame = ctk.CTkFrame(item)
+        entry_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
 
         if photo_thumbnail:
-            thumbnail_label = ctk.CTkLabel(species_frame, text="", image=photo_thumbnail)
+            thumbnail_label = ctk.CTkLabel(entry_frame, text="", image=photo_thumbnail)
             thumbnail_label.pack(side=tk.LEFT, padx=5)
             thumbnail_label.image = photo_thumbnail  # Keep a reference
 
-        # Add observation count to species name if there are multiple observations
-        display_name = species_name
+        # Add observation count to entry name if there are multiple observations
+        display_name = entry_name
         if observation_count > 1:
-            display_name = f"{species_name} ({observation_count} observations)"
+            display_name = f"{entry_name} ({observation_count} {observation_term}s)"
 
-        species_label = ctk.CTkLabel(species_frame, text=display_name, width=180)
-        species_label.pack(side=tk.LEFT, padx=5)
+        entry_label = ctk.CTkLabel(entry_frame, text=display_name, width=180)
+        entry_label.pack(side=tk.LEFT, padx=5)
 
         # Other fields
         date_label = ctk.CTkLabel(item, text=obs_date or "N/A", width=100)
@@ -357,12 +403,12 @@ class LifelistView:
                 actions_frame,
                 text="View All",
                 width=70,
-                command=lambda obs_ids=data["observation_ids"], name=species_name:
-                self.view_species_observations(obs_ids, name)
+                command=lambda obs_ids=data["observation_ids"], name=entry_name:
+                self.view_entry_observations(obs_ids, name, entry_term, observation_term)
             )
             view_all_btn.pack(side=tk.LEFT, padx=2)
         else:
-            # For single observations, keep the normal view button
+            # For single observations, provide both View and Edit buttons
             view_btn = ctk.CTkButton(
                 actions_frame,
                 text="View",
@@ -370,23 +416,34 @@ class LifelistView:
                 command=lambda o_id=data["latest_id"]: self.view_observation(o_id)
             )
             view_btn.pack(side=tk.LEFT, padx=2)
+            # Add Edit button for single observations
+            edit_btn = ctk.CTkButton(
+                actions_frame,
+                text="Edit",
+                width=70,
+                command=lambda o_id=data["latest_id"]: self.edit_observation(o_id)
+            )
+            edit_btn.pack(side=tk.LEFT, padx=2)
 
-        # Add button to add a new observation of this species
+
+        # Add button to add a new observation of this entry
         add_btn = ctk.CTkButton(
             actions_frame,
             text="Add New",
             width=70,
-            command=lambda species=species_name: self.add_new_observation_of_species(species)
+            command=lambda entry=entry_name: self.add_new_observation_of_entry(entry)
         )
         add_btn.pack(side=tk.LEFT, padx=2)
 
-    def view_species_observations(self, observation_ids, species_name):
+    def view_entry_observations(self, observation_ids, entry_name, entry_term, observation_term):
         """
-        View all observations for a species
+        View all observations for an entry
 
         Args:
             observation_ids: List of observation IDs
-            species_name: Name of the species
+            entry_name: Name of the entry
+            entry_term: Term used for entries in this lifelist
+            observation_term: Term used for observations in this lifelist
         """
         # Clear the content area
         for widget in self.content_frame.winfo_children():
@@ -402,7 +459,7 @@ class LifelistView:
 
         title_label = ctk.CTkLabel(
             header_frame,
-            text=f"All Observations of {species_name}",
+            text=f"All {observation_term}s of {entry_name}",
             font=ctk.CTkFont(size=20, weight="bold")
         )
         title_label.pack(side=tk.LEFT, padx=10)
@@ -416,8 +473,8 @@ class LifelistView:
 
         add_btn = ctk.CTkButton(
             header_frame,
-            text="Add Observation",
-            command=lambda: self.add_new_observation_of_species(species_name)
+            text=f"Add {observation_term.capitalize()}",
+            command=lambda: self.add_new_observation_of_entry(entry_name)
         )
         add_btn.pack(side=tk.RIGHT, padx=5)
 
@@ -492,15 +549,15 @@ class LifelistView:
         lifelist_id = self.app_state.get_current_lifelist_id()
         self.controller.show_observation_form(lifelist_id=lifelist_id)
 
-    def add_new_observation_of_species(self, species_name):
+    def add_new_observation_of_entry(self, entry_name):
         """
-        Add a new observation of a specific species
+        Add a new observation of a specific entry
 
         Args:
-            species_name: Name of the species to observe
+            entry_name: Name of the entry to observe
         """
         lifelist_id = self.app_state.get_current_lifelist_id()
-        self.controller.show_observation_form(lifelist_id=lifelist_id, species_name=species_name)
+        self.controller.show_observation_form(lifelist_id=lifelist_id, entry_name=entry_name)
 
     def edit_observation(self, observation_id):
         """
@@ -548,19 +605,45 @@ class LifelistView:
         scroll_frame = ctk.CTkScrollableFrame(dialog)
         scroll_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Tag checkboxes
+        # Group tags by category
+        tag_by_category = {}
+        for tag_id, tag_name, category in all_tags:
+            if category not in tag_by_category:
+                tag_by_category[category] = []
+            tag_by_category[category].append((tag_id, tag_name))
+
+        # Tag checkboxes, grouped by category
         tag_vars = {}
 
-        for tag_id, tag_name in all_tags:
-            var = tk.BooleanVar(value=tag_id in selected_tags)
-            tag_vars[tag_id] = var
+        # Sort categories with None at the end
+        sorted_categories = sorted(
+            [c for c in tag_by_category if c is not None]
+        ) + [None]
 
-            checkbox = ctk.CTkCheckBox(
-                scroll_frame,
-                text=tag_name,
-                variable=var
-            )
-            checkbox.pack(anchor="w", pady=2)
+        for category in sorted_categories:
+            if category not in tag_by_category:
+                continue
+
+            # Add category header if it exists
+            if category:
+                category_label = ctk.CTkLabel(
+                    scroll_frame, 
+                    text=category, 
+                    font=ctk.CTkFont(size=12, weight="bold")
+                )
+                category_label.pack(anchor="w", pady=(10, 0))
+
+            # Add tags for this category
+            for tag_id, tag_name in tag_by_category[category]:
+                var = tk.BooleanVar(value=tag_id in selected_tags)
+                tag_vars[tag_id] = var
+
+                checkbox = ctk.CTkCheckBox(
+                    scroll_frame,
+                    text=tag_name,
+                    variable=var
+                )
+                checkbox.pack(anchor="w", pady=2, padx=(20 if category else 0))
 
         # Apply button
         def apply_tag_filter():
@@ -592,14 +675,17 @@ class LifelistView:
 
         # Get current tiers
         current_tiers = self.db.get_lifelist_tiers(lifelist_id)
+        
+        # Get observation term for this lifelist type
+        observation_term = self.app_state.get_observation_term()
 
         ctk.CTkLabel(
             dialog,
-            text="Edit Observation Tiers",
+            text=f"Edit {observation_term.capitalize()} Tiers",
             font=ctk.CTkFont(size=16, weight="bold")
         ).pack(pady=10)
 
-        info_text = "Define the observation tiers for this lifelist. The order matters - the first tier is considered highest priority."
+        info_text = f"Define the {observation_term} tiers for this lifelist. The order matters - the first tier is considered highest priority."
         ctk.CTkLabel(dialog, text=info_text, wraplength=350).pack(pady=5)
 
         # Frame for the tiers list
@@ -693,10 +779,8 @@ class LifelistView:
                 if frame == row_frame:
                     # Remove from the list
                     tier_entries.pop(i)
-
-                    # Destroy the frame
-                    frame.destroy()
                     break
+            row_frame.destroy()
 
         # Add entries for existing tiers
         for tier in current_tiers:
@@ -735,7 +819,7 @@ class LifelistView:
 
             # Make sure we have at least one tier
             if not tiers:
-                messagebox.showerror("Error", "You must define at least one observation tier")
+                messagebox.showerror("Error", f"You must define at least one {observation_term} tier")
                 return
 
             try:
@@ -772,8 +856,11 @@ class LifelistView:
         # Get all observations for this lifelist
         observations = self.db.get_observations(lifelist_id)
 
+        # Get observation term for this lifelist type
+        observation_term = self.app_state.get_observation_term()
+
         if not observations:
-            messagebox.showinfo("Map View", "No observations to display on the map")
+            messagebox.showinfo("Map View", f"No {observation_term}s to display on the map")
             return
 
         # Create a temporary file for the map
@@ -800,259 +887,6 @@ class LifelistView:
                                     "2. Upload photos that contain GPS information in their EXIF data")
         else:
             messagebox.showerror("Error", "An unexpected error occurred while creating the map")
-
-    def show_create_lifelist_dialog(self):
-        """Show dialog to create a new lifelist"""
-        dialog = ctk.CTkToplevel(self.content_frame.winfo_toplevel())
-        dialog.title("Create New Lifelist")
-        dialog.geometry("600x500")  # Increased size to accommodate more content
-        dialog.transient(self.content_frame.winfo_toplevel())
-        dialog.grab_set()
-
-        center_window(dialog)
-
-        # Create a tabbed interface for better organization
-        tabview = ctk.CTkTabview(dialog)
-        tabview.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # Create tabs
-        basic_tab = tabview.add("Basic Info")
-        fields_tab = tabview.add("Custom Fields")
-        tiers_tab = tabview.add("Observation Tiers")
-
-        # Set the default tab
-        tabview.set("Basic Info")
-
-        # Basic Info tab
-        ctk.CTkLabel(basic_tab, text="Lifelist Name:").pack(pady=(20, 5))
-        name_entry = ctk.CTkEntry(basic_tab, width=300)
-        name_entry.pack(pady=5)
-
-        ctk.CTkLabel(basic_tab, text="Taxonomy Reference (optional):").pack(pady=(10, 5))
-        taxonomy_entry = ctk.CTkEntry(basic_tab, width=300)
-        taxonomy_entry.pack(pady=5)
-
-        # Custom Fields tab
-        ctk.CTkLabel(fields_tab, text="Custom Fields:").pack(pady=(15, 5))
-
-        custom_fields_frame = ctk.CTkFrame(fields_tab)
-        custom_fields_frame.pack(pady=5, fill=tk.X, padx=20)
-
-        custom_fields = []
-
-        def add_custom_field_row():
-            row_frame = ctk.CTkFrame(custom_fields_frame)
-            row_frame.pack(pady=2, fill=tk.X)
-
-            field_name = ctk.CTkEntry(row_frame, width=150, placeholder_text="Field Name")
-            field_name.pack(side=tk.LEFT, padx=5)
-
-            field_type = ctk.CTkComboBox(row_frame, values=["text", "number", "date", "boolean"])
-            field_type.pack(side=tk.LEFT, padx=5)
-
-            remove_btn = ctk.CTkButton(
-                row_frame,
-                text="✕",
-                width=30,
-                command=lambda: remove_field_row(row_frame)
-            )
-            remove_btn.pack(side=tk.LEFT, padx=5)
-
-            custom_fields.append((field_name, field_type, row_frame))
-
-        def remove_field_row(row):
-            for i, (_, _, frame) in enumerate(custom_fields):
-                if frame == row:
-                    custom_fields.pop(i)
-                    break
-            row.destroy()
-
-        # Add the first custom field row
-        add_custom_field_row()
-
-        # Button to add more custom fields
-        add_field_btn = ctk.CTkButton(
-            fields_tab,
-            text="+ Add Another Field",
-            command=add_custom_field_row
-        )
-        add_field_btn.pack(pady=10)
-
-        # Tiers tab
-        ctk.CTkLabel(
-            tiers_tab,
-            text="Observation Tiers",
-            font=ctk.CTkFont(size=16, weight="bold")
-        ).pack(pady=10)
-
-        info_text = "Define the observation tiers for your lifelist. The order matters - the first tier is considered highest priority."
-        ctk.CTkLabel(tiers_tab, text=info_text, wraplength=400).pack(pady=5)
-
-        # Frame for the tiers list
-        tiers_container = ctk.CTkFrame(tiers_tab)
-        tiers_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # Scrollable container for tiers
-        tiers_scroll = ctk.CTkScrollableFrame(tiers_container)
-        tiers_scroll.pack(fill=tk.BOTH, expand=True)
-
-        # List to keep track of tier entries
-        tier_entries = []
-
-        def add_tier_entry(tier_name=""):
-            """Add a tier entry to the list"""
-            row_frame = ctk.CTkFrame(tiers_scroll)
-            row_frame.pack(fill=tk.X, pady=2)
-
-            # Entry for tier name
-            entry = ctk.CTkEntry(row_frame, width=250)
-            entry.pack(side=tk.LEFT, padx=5)
-            if tier_name:
-                entry.insert(0, tier_name)
-
-            # Up button
-            up_btn = ctk.CTkButton(
-                row_frame,
-                text="↑",
-                width=30,
-                command=lambda: move_tier_up(row_frame)
-            )
-            up_btn.pack(side=tk.LEFT, padx=2)
-
-            # Down button
-            down_btn = ctk.CTkButton(
-                row_frame,
-                text="↓",
-                width=30,
-                command=lambda: move_tier_down(row_frame)
-            )
-            down_btn.pack(side=tk.LEFT, padx=2)
-
-            # Remove button
-            remove_btn = ctk.CTkButton(
-                row_frame,
-                text="✕",
-                width=30,
-                command=lambda: remove_tier(row_frame)
-            )
-            remove_btn.pack(side=tk.LEFT, padx=2)
-
-            tier_entries.append((entry, row_frame))
-
-            return entry
-
-        def move_tier_up(row_frame):
-            """Move a tier entry up in the list"""
-            for i, (_, frame) in enumerate(tier_entries):
-                if frame == row_frame and i > 0:
-                    # Swap with the entry above
-                    tier_entries[i], tier_entries[i - 1] = tier_entries[i - 1], tier_entries[i]
-
-                    # Repack all frames to update the order
-                    for _, frame in tier_entries:
-                        frame.pack_forget()
-
-                    for _, frame in tier_entries:
-                        frame.pack(fill=tk.X, pady=2)
-
-                    break
-
-        def move_tier_down(row_frame):
-            """Move a tier entry down in the list"""
-            for i, (_, frame) in enumerate(tier_entries):
-                if frame == row_frame and i < len(tier_entries) - 1:
-                    # Swap with the entry below
-                    tier_entries[i], tier_entries[i + 1] = tier_entries[i + 1], tier_entries[i]
-
-                    # Repack all frames to update the order
-                    for _, frame in tier_entries:
-                        frame.pack_forget()
-
-                    for _, frame in tier_entries:
-                        frame.pack(fill=tk.X, pady=2)
-
-                    break
-
-        def remove_tier(row_frame):
-            """Remove a tier entry from the list"""
-            for i, (_, frame) in enumerate(tier_entries):
-                if frame == row_frame:
-                    # Remove from the list
-                    tier_entries.pop(i)
-
-                    # Destroy the frame
-                    frame.destroy()
-                    break
-
-        # Add default tiers
-        for tier in ["wild", "heard", "captive"]:
-            add_tier_entry(tier)
-
-        # Add button for tiers
-        add_tier_btn = ctk.CTkButton(
-            tiers_tab,
-            text="+ Add Tier",
-            command=lambda: add_tier_entry()
-        )
-        add_tier_btn.pack(pady=10)
-
-        # Create lifelist button at the bottom
-        buttons_frame = ctk.CTkFrame(dialog)
-        buttons_frame.pack(fill=tk.X, padx=20, pady=20)
-
-        cancel_btn = ctk.CTkButton(
-            buttons_frame,
-            text="Cancel",
-            fg_color="gray40",
-            hover_color="gray30",
-            command=dialog.destroy
-        )
-        cancel_btn.pack(side=tk.LEFT, padx=5)
-
-        def create_lifelist():
-            name = name_entry.get().strip()
-            taxonomy = taxonomy_entry.get().strip() or None
-
-            if not name:
-                messagebox.showerror("Error", "Lifelist name is required")
-                return
-
-            # Create the lifelist
-            lifelist_id = self.db.create_lifelist(name, taxonomy)
-
-            if lifelist_id is None:
-                messagebox.showerror("Error", f"A lifelist named '{name}' already exists")
-                return
-
-            # Add custom fields
-            for field_name_entry, field_type_combobox, _ in custom_fields:
-                field_name = field_name_entry.get().strip()
-                field_type = field_type_combobox.get()
-
-                if field_name:
-                    self.db.add_custom_field(lifelist_id, field_name, field_type)
-
-            # Add custom tiers
-            tiers = []
-            for entry, _ in tier_entries:
-                tier_name = entry.get().strip()
-                if tier_name and tier_name not in tiers:
-                    tiers.append(tier_name)
-
-            # Make sure we have at least one tier
-            if tiers:
-                self.db.set_lifelist_tiers(lifelist_id, tiers)
-
-            # Close dialog and open the new lifelist
-            dialog.destroy()
-            self.controller.open_lifelist(lifelist_id)
-
-        create_btn = ctk.CTkButton(
-            buttons_frame,
-            text="Create Lifelist",
-            command=create_lifelist
-        )
-        create_btn.pack(side=tk.RIGHT, padx=5)
 
     def delete_lifelist(self, lifelist_id):
         """Delete a lifelist"""
