@@ -396,31 +396,23 @@ class LifelistView:
         actions_frame = ctk.CTkFrame(item)
         actions_frame.pack(side=tk.LEFT, padx=5)
 
-        # If multiple observations, add a button to view all observations
-        if observation_count > 1:
-            view_all_btn = ctk.CTkButton(
-                actions_frame,
-                text="View All",
-                width=70,
-                command=lambda obs_ids=data["observation_ids"], name=entry_name:
-                self.view_entry_observations(obs_ids, name, entry_term, observation_term)
-            )
-            view_all_btn.pack(side=tk.LEFT, padx=2)
-        else:
-            # For single observations, provide both View and Edit buttons
-            view_btn = ctk.CTkButton(
-                actions_frame,
-                text="View",
-                width=70,
-                command=lambda o_id=data["latest_id"]: self.view_observation(o_id)
-            )
-            view_btn.pack(side=tk.LEFT, padx=2)
-            # Add Edit button for single observations
+        # Unified approach: Always use View button to see details
+        view_btn = ctk.CTkButton(
+            actions_frame,
+            text="View",
+            width=70,
+            command=lambda obs_ids=data["observation_ids"], name=entry_name:
+            self.view_entry_observations(obs_ids, name, entry_term, observation_term)
+        )
+        view_btn.pack(side=tk.LEFT, padx=2)
+
+        # Direct Edit button if there's just a single observation
+        if observation_count == 1:
             edit_btn = ctk.CTkButton(
                 actions_frame,
                 text="Edit",
                 width=70,
-                command=lambda o_id=data["latest_id"]: self.edit_observation(o_id)
+                command=lambda o_id=data["observation_ids"][0]: self.edit_observation(o_id)
             )
             edit_btn.pack(side=tk.LEFT, padx=2)
 
@@ -456,9 +448,15 @@ class LifelistView:
         header_frame = ctk.CTkFrame(container)
         header_frame.pack(fill=tk.X, padx=10, pady=10)
 
+        # Use appropriate title based on number of observations
+        if len(observation_ids) == 1:
+            title_text = f"{observation_term.capitalize()} of {entry_name}"
+        else:
+            title_text = f"All {observation_term}s of {entry_name}"
+
         title_label = ctk.CTkLabel(
             header_frame,
-            text=f"All {observation_term}s of {entry_name}",
+            text=title_text,
             font=ctk.CTkFont(size=20, weight="bold")
         )
         title_label.pack(side=tk.LEFT, padx=10)
@@ -626,8 +624,8 @@ class LifelistView:
             # Add category header if it exists
             if category:
                 category_label = ctk.CTkLabel(
-                    scroll_frame, 
-                    text=category, 
+                    scroll_frame,
+                    text=category,
                     font=ctk.CTkFont(size=12, weight="bold")
                 )
                 category_label.pack(anchor="w", pady=(10, 0))
@@ -674,7 +672,7 @@ class LifelistView:
 
         # Get current tiers
         current_tiers = self.db.get_lifelist_tiers(lifelist_id)
-        
+
         # Get observation term for this lifelist type
         observation_term = self.app_state.get_observation_term()
 
