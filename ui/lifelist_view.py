@@ -3,7 +3,7 @@ Lifelist view module - Displays and manages lifelist contents
 """
 import tkinter as tk
 import customtkinter as ctk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox
 import webbrowser
 import os
 import tempfile
@@ -11,8 +11,7 @@ import tempfile
 from database_factory import DatabaseFactory
 from models.photo_utils import PhotoUtils
 from models.map_generator import MapGenerator
-from ui.utils import show_message, create_scrollable_container, center_window
-from file_utils import FileUtils
+from ui.utils import create_scrollable_container, center_window
 
 
 class LifelistView:

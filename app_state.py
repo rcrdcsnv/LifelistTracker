@@ -1,7 +1,7 @@
 """
 AppState - Manages application state and provides centralized access to state data
 """
-from typing import Optional, Callable, Dict, Any, Tuple
+from typing import Optional, Callable, Tuple
 
 from database_factory import DatabaseFactory
 from config_manager import ConfigManager

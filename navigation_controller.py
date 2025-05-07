@@ -2,7 +2,7 @@
 NavigationController - Handles view transitions and UI component coordination
 """
 import tkinter as tk
-from typing import Optional, Type, Dict, Any, Callable
+from typing import Optional, Type, Callable
 
 
 class NavigationController:
