@@ -3,7 +3,7 @@ Welcome view - Main welcome screen for the application
 """
 import tkinter as tk
 import customtkinter as ctk
-
+from tktooltip import ToolTip
 
 class WelcomeView:
     """
@@ -128,7 +128,7 @@ class WelcomeView:
             info_label.pack(side=tk.RIGHT, padx=5)
 
             # Show tooltip with description on hover
-            self._create_tooltip(info_label, type_desc)
+            _create_tooltip(info_label, type_desc)
 
         # Right column: Recent lifelists
         right_column = ctk.CTkFrame(columns_frame)
@@ -210,47 +210,6 @@ class WelcomeView:
             command=self._import_lifelist
         )
         import_btn.pack(anchor="w", pady=5)
-        
-    def _create_tooltip(self, widget, text):
-        """
-        Create a simple tooltip for a widget
-        
-        Args:
-            widget: Widget to attach tooltip to
-            text: Tooltip text
-        """
-        tooltip = None
-        
-        def show_tooltip(event):
-            nonlocal tooltip
-            x, y, _, _ = widget.bbox("insert")
-            x += widget.winfo_rootx() + 25
-            y += widget.winfo_rooty() + 25
-            
-            # Create a toplevel window
-            tooltip = ctk.CTkToplevel(widget)
-            tooltip.wm_overrideredirect(True)
-            tooltip.wm_geometry(f"+{x}+{y}")
-            
-            label = ctk.CTkLabel(
-                tooltip,
-                text=text,
-                wraplength=250,
-                corner_radius=5,
-                fg_color="gray20",
-                padx=10,
-                pady=10
-            )
-            label.pack()
-            
-        def hide_tooltip(event):
-            nonlocal tooltip
-            if tooltip:
-                tooltip.destroy()
-                tooltip = None
-                
-        widget.bind("<Enter>", show_tooltip)
-        widget.bind("<Leave>", hide_tooltip)
 
     def _create_lifelist_with_type(self, type_id):
         """
@@ -280,3 +239,23 @@ class WelcomeView:
             self.db,
             lambda: self.controller.show_welcome()  # Refresh view after import
         )
+
+
+def _create_tooltip(widget, text):
+    """
+    Create a simple tooltip for a widget using the tkinter-tooltip library
+
+    Args:
+        widget: Widget to attach tooltip to
+        text: Tooltip text
+    """
+    # Create tooltip with a slight delay to avoid flickering
+    ToolTip(widget,
+            msg=text,
+            delay=0.1,  # Small delay for better reliability
+            follow=True,  # Follow the mouse
+            #wrap_length=250,  # Control text wrapping
+            bg="gray20",  # Dark background
+            fg="white",  # Light text
+            padx=10,
+            pady=10)
