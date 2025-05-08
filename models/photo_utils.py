@@ -4,6 +4,7 @@ PhotoUtils - Utilities for working with photos and images
 from datetime import datetime
 from PIL import Image, ImageTk
 import exifread
+from customtkinter import CTkImage
 
 
 class PhotoUtils:
@@ -92,8 +93,8 @@ class PhotoUtils:
             # Using PIL's context manager for opening images
             with Image.open(img_path) as img:
                 img.thumbnail(size)
-                # Convert to PhotoImage (this creates a new object, so we're not closing prematurely)
-                return ImageTk.PhotoImage(img)
+                # Convert to CTkImage instead of PhotoImage
+                return CTkImage(light_image=img, dark_image=img, size=size)
         except Exception as e:
             print(f"Error creating thumbnail: {e}")
             return None
