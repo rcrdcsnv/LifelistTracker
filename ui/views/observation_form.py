@@ -2,9 +2,9 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QPushButton, QFrame, QScrollArea, QGridLayout,
                                QLineEdit, QDateEdit, QComboBox, QTextEdit,
-                               QFileDialog, QMessageBox)
+                               QFileDialog, QMessageBox, QCheckBox)
 from PySide6.QtCore import Qt, QDate
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QDoubleValidator
 from pathlib import Path
 import json
 from datetime import datetime
@@ -706,8 +706,29 @@ class ObservationForm(QWidget):
 
     def _save_custom_fields(self, session, observation):
         """Save custom field values"""
-        # This is just a stub function for simplicity
-        pass
+        # Get custom field values from form widgets
+        field_values = {}
+
+        for field_id, widget in self.custom_field_widgets.items():
+            value = None
+
+            # Extract value based on widget type
+            if isinstance(widget, QLineEdit):
+                value = widget.text().strip()
+            elif isinstance(widget, QDateEdit):
+                value = widget.date().toString("yyyy-MM-dd")
+            elif isinstance(widget, QComboBox):
+                value = widget.currentText().strip()
+            elif isinstance(widget, QCheckBox):
+                value = "1" if widget.isChecked() else "0"
+
+            # Store non-empty values
+            if value:
+                field_values[field_id] = value
+
+        # Use repository to save custom field values
+        from db.repositories import ObservationRepository
+        ObservationRepository.set_observation_custom_fields(session, observation.id, field_values)
 
     def _save_tags(self, session, observation):
         """Save observation tags"""
@@ -734,6 +755,39 @@ class ObservationForm(QWidget):
 
     def _save_photos(self, session, observation):
         """Save observation photos"""
-        # This is just a stub function for simplicity
-        # In a real implementation, we would use the photo_manager
-        pass
+        from db.repositories import PhotoRepository
+
+        # Handle existing photos in the database
+        if self.current_observation_id:
+            # Get existing photos
+            existing_photos = PhotoRepository.get_observation_photos(session, observation.id)
+            existing_paths = {photo.file_path for photo in existing_photos}
+
+            # Find photos to delete (in database but not in self.photos)
+            current_paths = {photo["path"] for photo in self.photos if "path" in photo}
+            photos_to_delete = [photo for photo in existing_photos if photo.file_path not in current_paths]
+
+            # Delete removed photos
+            for photo in photos_to_delete:
+                self.photo_manager.delete_photo(session, photo)
+
+        # Add/update photos
+        for photo_data in self.photos:
+            path = photo_data.get("path")
+            if not path:
+                continue
+
+            # Check if this is a new photo or an existing one
+            if self.current_observation_id and any(p.file_path == path for p in existing_photos):
+                # Existing photo - update primary flag if needed
+                photo = next(p for p in existing_photos if p.file_path == path)
+                if photo.is_primary != photo_data.get("is_primary", False):
+                    PhotoRepository.set_primary_photo(session, photo.id)
+            else:
+                # New photo - store it
+                self.photo_manager.store_photo(
+                    session,
+                    observation.id,
+                    path,
+                    is_primary=photo_data.get("is_primary", False)
+                )

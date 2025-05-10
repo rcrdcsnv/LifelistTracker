@@ -20,5 +20,191 @@
       "width": 100,
       "height": 100
     }
+  },
+  "lifelist_types": {
+    "templates": {
+      "Wildlife": {
+        "tiers": [
+          "wild",
+          "heard",
+          "captive"
+        ],
+        "entry_term": "species",
+        "observation_term": "sighting",
+        "default_fields": [
+          {
+            "name": "Scientific Name",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Family",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Weather",
+            "type": "text",
+            "required": 0,
+            "options": null
+          }
+        ]
+      },
+      "Plants": {
+        "tiers": [
+          "wild",
+          "garden",
+          "greenhouse"
+        ],
+        "entry_term": "species",
+        "observation_term": "sighting",
+        "default_fields": [
+          {
+            "name": "Scientific Name",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Family",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Habitat",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Flowering Season",
+            "type": "text",
+            "required": 0,
+            "options": null
+          }
+        ]
+      },
+      "Books": {
+        "tiers": [
+          "read",
+          "currently reading",
+          "want to read",
+          "abandoned"
+        ],
+        "entry_term": "book",
+        "observation_term": "reading",
+        "default_fields": [
+          {
+            "name": "Author",
+            "type": "text",
+            "required": 1,
+            "options": null
+          },
+          {
+            "name": "Publisher",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Year",
+            "type": "number",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Genre",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Rating",
+            "type": "rating",
+            "required": 0,
+            "options": {
+              "max": 5
+            }
+          }
+        ]
+      },
+      "Travel": {
+        "tiers": [
+          "visited",
+          "stayed overnight",
+          "want to visit"
+        ],
+        "entry_term": "place",
+        "observation_term": "visit",
+        "default_fields": [
+          {
+            "name": "Country",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "City",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Duration",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Rating",
+            "type": "rating",
+            "required": 0,
+            "options": {
+              "max": 5
+            }
+          }
+        ]
+      },
+      "Foods": {
+        "tiers": [
+          "tried",
+          "cooked",
+          "want to try"
+        ],
+        "entry_term": "dish",
+        "observation_term": "tasting",
+        "default_fields": [
+          {
+            "name": "Cuisine",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Ingredients",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Restaurant",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Rating",
+            "type": "rating",
+            "required": 0,
+            "options": {
+              "max": 5
+            }
+          }
+        ]
+      }
+    }
   }
 }

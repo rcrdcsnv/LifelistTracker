@@ -1,6 +1,5 @@
 # ui/styles/light_theme.py
 from PySide6.QtGui import QPalette, QColor
-from PySide6.QtCore import Qt
 
 def apply_light_theme(app):
     """Apply a light color theme to the application"""

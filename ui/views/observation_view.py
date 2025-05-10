@@ -183,7 +183,7 @@ class ObservationView(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-    def _load_photos(self, session, observation):
+    def _load_photos(self, observation):
         """Load and display photos for the observation"""
         photos = observation.photos
 
@@ -216,11 +216,9 @@ class ObservationView(QWidget):
         # Add thumbnails if there are multiple photos
         if len(photos) > 1:
             for photo in photos:
-                thumb_image = self.photo_manager.get_photo_thumbnail(
+                if thumb_image := self.photo_manager.get_photo_thumbnail(
                     observation.lifelist_id, observation.id, photo.id, "sm"
-                )
-
-                if thumb_image:
+                ):
                     # Create thumbnail label
                     thumb_label = QLabel()
 
@@ -237,7 +235,7 @@ class ObservationView(QWidget):
 
                     self.images.append(pixmap)  # Keep reference
 
-    def _display_details(self, observation, entry_term, observation_term):
+    def _display_details(self, observation, observation_term):
         """Display observation details"""
         details = [
             ("Entry Name:", observation.entry_name),
@@ -281,10 +279,9 @@ class ObservationView(QWidget):
         grid_frame = QFrame()
         grid_layout = QGridLayout(grid_frame)
 
-        row = 0
-        for field in custom_fields:
+        for row, field in enumerate(custom_fields):
             # Create label
-            label = QLabel(field.field.field_name + ":")
+            label = QLabel(f"{field.field.field_name}:")
             label.setStyleSheet("font-weight: bold;")
 
             # Create value
@@ -294,8 +291,6 @@ class ObservationView(QWidget):
             # Add to grid
             grid_layout.addWidget(label, row, 0)
             grid_layout.addWidget(value, row, 1)
-
-            row += 1
 
         self.custom_fields_layout.addWidget(grid_frame)
 

@@ -1,6 +1,5 @@
 # ui/styles/dark_theme.py
 from PySide6.QtGui import QPalette, QColor
-from PySide6.QtCore import Qt
 
 def apply_dark_theme(app):
     """Apply a dark color theme to the application"""
