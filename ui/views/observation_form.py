@@ -3,12 +3,29 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QPushButton, QFrame, QScrollArea, QGridLayout,
                                QLineEdit, QDateEdit, QComboBox, QTextEdit,
                                QFileDialog, QMessageBox, QCheckBox)
-from PySide6.QtCore import Qt, QDate
-from PySide6.QtGui import QPixmap, QDoubleValidator
+from PySide6.QtCore import Qt, QDate, Signal
+from PySide6.QtGui import QPixmap, QDoubleValidator, QFocusEvent
 from pathlib import Path
 import json
 from datetime import datetime
 
+
+# Add the ClickableCoordinateEdit class
+class ClickableCoordinateEdit(QLineEdit):
+    """Custom QLineEdit that shows a map picker when focused"""
+
+    clicked = Signal()
+
+    def __init__(self, placeholder_text, parent=None):
+        super().__init__(parent)
+        self.setPlaceholderText(placeholder_text)
+        self.setToolTip(f"Enter {placeholder_text.lower()} or click to select from map")
+
+    def focusInEvent(self, event):
+        """Show map picker on focus if field is empty"""
+        super().focusInEvent(event)
+        if not self.text().strip():
+            self.clicked.emit()
 
 class ObservationForm(QWidget):
     """Widget for adding or editing an observation"""
@@ -108,31 +125,85 @@ class ObservationForm(QWidget):
         self.location_edit = QLineEdit()
         basic_layout.addWidget(self.location_edit, 2, 1)
 
-        # Coordinates fields
-        coords_layout = QHBoxLayout()
-        self.latitude_edit = QLineEdit()
-        self.latitude_edit.setPlaceholderText("Latitude")
+        # Coordinates fields with enhanced UI
+        coords_label = QLabel("Coordinates:")
+        basic_layout.addWidget(coords_label, 3, 0)
+
+        coords_container = QWidget()
+        coords_layout = QHBoxLayout(coords_container)
+        coords_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Use custom clickable coordinate fields
+        self.latitude_edit = ClickableCoordinateEdit("Latitude")
+        self.latitude_edit.setValidator(QDoubleValidator(-90.0, 90.0, 6))
+        self.latitude_edit.clicked.connect(self._get_coordinates_from_map)
         coords_layout.addWidget(self.latitude_edit)
 
-        self.longitude_edit = QLineEdit()
-        self.longitude_edit.setPlaceholderText("Longitude")
+        self.longitude_edit = ClickableCoordinateEdit("Longitude")
+        self.longitude_edit.setValidator(QDoubleValidator(-180.0, 180.0, 6))
+        self.longitude_edit.clicked.connect(self._get_coordinates_from_map)
         coords_layout.addWidget(self.longitude_edit)
 
-        basic_layout.addWidget(QLabel("Coordinates:"), 3, 0)
-        basic_layout.addLayout(coords_layout, 3, 1)
+        # Add "Get from map" button
+        self.get_from_map_btn = QPushButton("📍 Pick on Map")
+        self.get_from_map_btn.clicked.connect(self._get_coordinates_from_map)
+        coords_layout.addWidget(self.get_from_map_btn)
+
+        # Add "Clear" button
+        self.clear_coords_btn = QPushButton("Clear")
+        self.clear_coords_btn.clicked.connect(self._clear_coordinates)
+        coords_layout.addWidget(self.clear_coords_btn)
+
+        basic_layout.addWidget(coords_container, 3, 1)
+
+        # Add a help text for coordinates
+        coords_help = QLabel("Tip: Click on map button or coordinate fields to select from map")
+        coords_help.setStyleSheet("color: #666; font-size: 11px;")
+        basic_layout.addWidget(coords_help, 4, 1)
 
         # Tier field
-        basic_layout.addWidget(QLabel("Tier:"), 4, 0)
+        basic_layout.addWidget(QLabel("Tier:"), 5, 0)
         self.tier_combo = QComboBox()
-        basic_layout.addWidget(self.tier_combo, 4, 1)
+        basic_layout.addWidget(self.tier_combo, 5, 1)
 
         # Notes field
-        basic_layout.addWidget(QLabel("Notes:"), 5, 0, Qt.AlignTop)
+        basic_layout.addWidget(QLabel("Notes:"), 6, 0, Qt.AlignTop)
         self.notes_edit = QTextEdit()
         self.notes_edit.setMinimumHeight(100)
-        basic_layout.addWidget(self.notes_edit, 5, 1)
+        basic_layout.addWidget(self.notes_edit, 6, 1)
 
         self.form_layout.addWidget(basic_frame)
+
+    def _get_coordinates_from_map(self):
+        """Get coordinates from an interactive map"""
+        from ui.dialogs.coordinate_picker import CoordinatePickerDialog
+
+        # Get current coordinates if available
+        current_lat = None
+        current_lon = None
+
+        try:
+            lat_text = self.latitude_edit.text().strip()
+            lon_text = self.longitude_edit.text().strip()
+
+            if lat_text and lon_text:
+                current_lat = float(lat_text)
+                current_lon = float(lon_text)
+        except ValueError:
+            pass
+
+        # Open coordinate picker dialog
+        dialog = CoordinatePickerDialog(self, current_lat, current_lon)
+
+        if dialog.exec():
+            lat, lon = dialog.get_coordinates()
+            self.latitude_edit.setText(f"{lat:.6f}")
+            self.longitude_edit.setText(f"{lon:.6f}")
+
+    def _clear_coordinates(self):
+        """Clear the coordinate fields"""
+        self.latitude_edit.clear()
+        self.longitude_edit.clear()
 
     def _create_custom_fields_section(self):
         """Create the custom fields section"""
@@ -194,10 +265,22 @@ class ObservationForm(QWidget):
         self.photos_label.setStyleSheet("font-size: 16px; font-weight: bold;")
         self.photos_layout.addWidget(self.photos_label)
 
+        # Photo controls
+        photo_controls = QHBoxLayout()
+
         # Add photo button
         add_photo_button = QPushButton("Add Photos")
         add_photo_button.clicked.connect(self._add_photos)
-        self.photos_layout.addWidget(add_photo_button)
+        photo_controls.addWidget(add_photo_button)
+
+        # Add "Use photo coordinates" button
+        self.use_photo_coords_btn = QPushButton("Use Photo Coordinates")
+        self.use_photo_coords_btn.clicked.connect(self._use_photo_coordinates)
+        self.use_photo_coords_btn.setEnabled(False)  # Disabled until photos with EXIF are available
+        photo_controls.addWidget(self.use_photo_coords_btn)
+
+        photo_controls.addStretch()
+        self.photos_layout.addLayout(photo_controls)
 
         # Container for photo thumbnails
         self.photos_container = QFrame()
@@ -205,6 +288,48 @@ class ObservationForm(QWidget):
         self.photos_layout.addWidget(self.photos_container)
 
         self.form_layout.addWidget(self.photos_frame)
+
+    def _use_photo_coordinates(self):
+        """Let user choose which photo coordinates to use"""
+        photos_with_coords = [(i, p) for i, p in enumerate(self.photos)
+                              if p.get("latitude") is not None and p.get("longitude") is not None]
+
+        if not photos_with_coords:
+            QMessageBox.information(self, "No Coordinates",
+                                    "None of the photos have GPS coordinates.")
+            return
+
+        # If only one photo with coordinates, use it directly
+        if len(photos_with_coords) == 1:
+            _, photo = photos_with_coords[0]
+            self.latitude_edit.setText(str(photo["latitude"]))
+            self.longitude_edit.setText(str(photo["longitude"]))
+            return
+
+        # Multiple photos with coordinates - let user choose
+        from PySide6.QtWidgets import QInputDialog
+
+        photo_choices = []
+        for i, (idx, photo) in enumerate(photos_with_coords):
+            photo_name = Path(photo["path"]).name
+            coords = f"({photo['latitude']:.6f}, {photo['longitude']:.6f})"
+            primary = " (Primary)" if photo.get("is_primary", False) else ""
+            photo_choices.append(f"{photo_name} {coords}{primary}")
+
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Select Photo Coordinates",
+            "Choose which photo's coordinates to use:",
+            photo_choices,
+            0,
+            False
+        )
+
+        if ok and choice:
+            selected_idx = photo_choices.index(choice)
+            _, photo = photos_with_coords[selected_idx]
+            self.latitude_edit.setText(str(photo["latitude"]))
+            self.longitude_edit.setText(str(photo["longitude"]))
 
     def load_form(self, lifelist_id, observation_id=None, entry_name=None):
         """
@@ -574,7 +699,7 @@ class ObservationForm(QWidget):
             if any(p.get("path") == path for p in self.photos):
                 continue
 
-            # Extract EXIF data if possible (just for sake of example)
+            # Extract EXIF data if possible
             lat = lon = taken_date = None
             try:
                 from utils.image import extract_exif_data
@@ -593,6 +718,35 @@ class ObservationForm(QWidget):
 
         # Update display
         self._update_photos_display()
+
+        # Auto-populate coordinates if empty and photo has EXIF data
+        self._auto_populate_coordinates()
+
+    def _auto_populate_coordinates(self):
+        """Auto-populate observation coordinates from photos if available"""
+        # Check if observation coordinates are already set
+        if self.latitude_edit.text().strip() and self.longitude_edit.text().strip():
+            return
+
+        # Find first photo with EXIF coordinates
+        for photo in self.photos:
+            if photo.get("latitude") is not None and photo.get("longitude") is not None:
+                # Ask user if they want to use these coordinates
+                from PySide6.QtWidgets import QMessageBox
+                reply = QMessageBox.question(
+                    self,
+                    "Use Photo Coordinates",
+                    f"A photo has GPS coordinates ({photo['latitude']:.6f}, {photo['longitude']:.6f}). "
+                    f"Would you like to use these for the observation location?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+
+                if reply == QMessageBox.Yes:
+                    self.latitude_edit.setText(str(photo["latitude"]))
+                    self.longitude_edit.setText(str(photo["longitude"]))
+
+                break  # Only ask for the first photo with coordinates
 
     def _update_photos_display(self):
         """Update the photos display"""
@@ -629,6 +783,12 @@ class ObservationForm(QWidget):
                 )
                 photo_layout.addWidget(primary_check)
 
+                # Show if photo has GPS coordinates
+                if photo.get("latitude") is not None and photo.get("longitude") is not None:
+                    gps_label = QLabel("GPS: ✓")
+                    gps_label.setStyleSheet("color: green; font-weight: bold;")
+                    photo_layout.addWidget(gps_label)
+
                 # Remove button
                 remove_button = QPushButton("Remove")
                 remove_button.clicked.connect(
@@ -640,11 +800,35 @@ class ObservationForm(QWidget):
             except Exception as e:
                 print(f"Error creating thumbnail: {e}")
 
+                # Enable/disable "Use Photo Coordinates" button based on available photos with GPS
+            photos_with_coords = [p for p in self.photos
+                                  if p.get("latitude") is not None and p.get("longitude") is not None]
+            self.use_photo_coords_btn.setEnabled(len(photos_with_coords) > 0)
+
     def _set_primary_photo(self, index):
         """Set a photo as the primary photo"""
         for i in range(len(self.photos)):
             self.photos[i]["is_primary"] = (i == index)
         self._update_photos_display()
+
+        # When setting a new primary photo, offer to update coordinates if they have EXIF data
+        if 0 <= index < len(self.photos):
+            photo = self.photos[index]
+            if photo.get("latitude") is not None and photo.get("longitude") is not None:
+                # Ask user if they want to update coordinates to match this photo
+                from PySide6.QtWidgets import QMessageBox
+                reply = QMessageBox.question(
+                    self,
+                    "Update Coordinates",
+                    f"This photo has GPS coordinates ({photo['latitude']:.6f}, {photo['longitude']:.6f}). "
+                    f"Would you like to update the observation coordinates?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+
+                if reply == QMessageBox.Yes:
+                    self.latitude_edit.setText(str(photo["latitude"]))
+                    self.longitude_edit.setText(str(photo["longitude"]))
 
     def _remove_photo(self, index):
         """Remove a photo"""
