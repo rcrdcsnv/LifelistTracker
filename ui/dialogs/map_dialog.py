@@ -1,37 +1,34 @@
 # ui/dialogs/map_dialog.py
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                               QPushButton, QComboBox, QDialogButtonBox,
-                               QFileDialog, QMessageBox, QSpinBox)
-from PySide6.QtCore import QUrl
-from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+                               QComboBox, QDialogButtonBox, QFileDialog,
+                               QMessageBox, QSpinBox)
+from typing import Dict, Any, List
 import json
-import tempfile
-import os
-from PySide6.QtWebEngineCore import QWebEngineSettings
+from .base_map_dialog import BaseMapDialog
 
 
-class MapDialog(QDialog):
+class MapDialog(BaseMapDialog):
     """Dialog for showing observations on a map"""
 
     def __init__(self, parent, db_manager, lifelist_id, observation_term="observation"):
-        super().__init__(parent)
-
         self.db_manager = db_manager
         self.lifelist_id = lifelist_id
         self.observation_term = observation_term
-        self.temp_file_path = None
 
-        self.setWindowTitle(f"{observation_term.capitalize()} Map")
-        self.setMinimumWidth(800)
-        self.setMinimumHeight(600)
+        # UI Controls
+        self.tier_combo = None
+        self.entry_combo = None
+        self.zoom_spin = None
+        self.apply_btn = None
+        self.save_btn = None
 
-        self._setup_ui()
-        self._load_observations()
+        # Map data
+        self.observations = []
 
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        super().__init__(parent, f"{observation_term.capitalize()} Map")
 
-        # Controls
+    def add_controls(self):
+        """Add map dialog specific controls"""
         controls_layout = QHBoxLayout()
 
         # Filter by tier
@@ -80,29 +77,137 @@ class MapDialog(QDialog):
         self.save_btn.clicked.connect(self._save_map)
         controls_layout.addWidget(self.save_btn)
 
-        layout.addLayout(controls_layout)
+        self.layout().addLayout(controls_layout)
 
-        # Map view with necessary settings
-        self.map_view = QWebEngineView()
-
-        # Enable essential settings for external resource loading
-        settings = self.map_view.settings()
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
-
-        self.map_view.loadFinished.connect(self._on_load_finished)
-        layout.addWidget(self.map_view)
-
-        # Dialog buttons
+    def add_bottom_controls(self):
+        """Add dialog buttons at the bottom"""
         button_box = QDialogButtonBox(QDialogButtonBox.Close)
         button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
+        self.layout().addWidget(button_box)
 
-        # Load tiers for the lifelist
+        # Load initial data
         self._load_tiers()
-
-        # Load unique entries for the lifelist
         self._load_entries()
+        self._load_observations()
+
+    def get_map_config(self) -> Dict[str, Any]:
+        """Get map configuration for observation map"""
+        # Calculate center from observations
+        if self.observations:
+            valid_coords = [(obs.latitude, obs.longitude) for obs in self.observations
+                            if obs.latitude is not None and obs.longitude is not None]
+
+            if valid_coords:
+                lat_sum = sum(lat for lat, _ in valid_coords)
+                lon_sum = sum(lon for _, lon in valid_coords)
+                count = len(valid_coords)
+
+                center_lat = lat_sum / count
+                center_lon = lon_sum / count
+
+                # Calculate appropriate zoom level based on spread of observations
+                if count > 1:
+                    # Calculate bounds
+                    min_lat = min(lat for lat, _ in valid_coords)
+                    max_lat = max(lat for lat, _ in valid_coords)
+                    min_lon = min(lon for _, lon in valid_coords)
+                    max_lon = max(lon for _, lon in valid_coords)
+
+                    # Estimate zoom based on coordinate range
+                    lat_range = max_lat - min_lat
+                    lon_range = max_lon - min_lon
+                    max_range = max(lat_range, lon_range)
+
+                    if max_range > 100:
+                        zoom = 3
+                    elif max_range > 50:
+                        zoom = 4
+                    elif max_range > 20:
+                        zoom = 5
+                    elif max_range > 10:
+                        zoom = 6
+                    elif max_range > 5:
+                        zoom = 7
+                    elif max_range > 2:
+                        zoom = 8
+                    elif max_range > 1:
+                        zoom = 9
+                    elif max_range > 0.5:
+                        zoom = 10
+                    else:
+                        zoom = 11
+                else:
+                    # Single observation, zoom in more
+                    zoom = 13
+            else:
+                # No valid coordinates, use default
+                center_lat = 0.0
+                center_lon = 0.0
+                zoom = 5
+        else:
+            # No observations, use default
+            center_lat = 0.0
+            center_lon = 0.0
+            zoom = 5
+
+        return {
+            'centerLat': center_lat,
+            'centerLon': center_lon,
+            'zoom': zoom
+        }
+
+    def get_custom_javascript(self) -> str:
+        """Get custom JavaScript for observation map"""
+        # Generate markers data
+        markers = []
+        for obs in self.observations:
+            if obs.latitude is not None and obs.longitude is not None:
+                marker = {
+                    "lat": obs.latitude,
+                    "lon": obs.longitude,
+                    "title": obs.entry_name,
+                    "popup": f"<strong>{obs.entry_name}</strong><br>" +
+                             f"Date: {obs.observation_date.strftime('%Y-%m-%d') if obs.observation_date else 'Unknown'}<br>" +
+                             f"Location: {obs.location or 'Unknown'}<br>" +
+                             f"Tier: {obs.tier or 'Unknown'}"
+                }
+                markers.append(marker)
+
+        markers_json = json.dumps(markers)
+        # Get user's selected zoom if available, otherwise use calculated zoom
+        use_fit_bounds = len(markers) > 1  # Only use fitBounds for multiple markers
+
+        return f"""
+        
+        // Add markers
+        const markers = {markers_json};
+        const useFitBounds = {json.dumps(use_fit_bounds)};
+        console.log('Markers to process: ' + markers.length);
+
+        if (markers.length > 0) {{
+            const markerLayer = L.layerGroup();
+            
+            markers.forEach(function(marker, index) {{
+                if (marker.lat !== undefined && marker.lon !== undefined) {{
+                    const m = L.marker([marker.lat, marker.lon])
+                        .addTo(markerLayer)
+                        .bindPopup(marker.popup);
+                    console.log('Added marker ' + index + ' at [' + marker.lat + ',' + marker.lon + ']');
+                }}
+            }});
+            
+            markerLayer.addTo(map);
+
+            // Use fitBounds only for multiple markers, otherwise the map config zoom is used
+            if (useFitBounds) {{
+                // Add some padding around the markers
+                map.fitBounds(markerLayer.getBounds().pad(0.1));
+                console.log('Fitted bounds to markers');
+            }}
+        }}
+
+        console.log('Map initialization complete!');
+        """
 
     def _load_tiers(self):
         """Load tiers for the lifelist"""
@@ -159,91 +264,21 @@ class MapDialog(QDialog):
             from db.repositories import ObservationRepository
 
             # Get observations with coordinates
-            observations = ObservationRepository.get_observations_with_coordinates(
+            self.observations = ObservationRepository.get_observations_with_coordinates(
                 session, self.lifelist_id, tier=tier, entry_name=entry
             )
 
-            if not observations:
+            if not self.observations:
                 QMessageBox.information(
                     self,
                     "No Coordinates",
                     f"No {self.observation_term}s with coordinates found for the selected filters."
                 )
-                # Create empty map instead of returning
-                self._create_map([])
-                return
+                # Create empty map
+                self.observations = []
 
-            # Create map HTML
-            self._create_map(observations)
-
-    def _on_load_finished(self, ok):
-        """Handle web view load finished event"""
-        if not ok:
-            print("Failed to load map HTML")
-            QMessageBox.warning(self, "Warning", "Failed to load map. Please try again.")
-
-    #def _on_console_message(self, level, message, line, source):
-    #    """Handle JavaScript console messages for debugging"""
-    #    print(f"JavaScript console [{level}]: {message} (line {line}, source: {source})")
-
-    def _create_map(self, observations):
-        """Create HTML for the map"""
-        if not self.map_view:
-            return
-
-        # Generate markers
-        markers = []
-        for obs in observations:
-            if obs.latitude is not None and obs.longitude is not None:
-                marker = {
-                    "lat": obs.latitude,
-                    "lon": obs.longitude,
-                    "title": obs.entry_name,
-                    "popup": f"<strong>{obs.entry_name}</strong><br>"
-                             f"Date: {obs.observation_date.strftime('%Y-%m-%d') if obs.observation_date else 'Unknown'}<br>"
-                             f"Location: {obs.location or 'Unknown'}<br>"
-                             f"Tier: {obs.tier or 'Unknown'}"
-                }
-                markers.append(marker)
-
-        # Calculate center
-        if markers:
-            lat_sum = sum(m["lat"] for m in markers)
-            lon_sum = sum(m["lon"] for m in markers)
-            center_lat = lat_sum / len(markers)
-            center_lon = lon_sum / len(markers)
-        else:
-            center_lat = 0
-            center_lon = 0
-
-        # Load template
-        template = self._get_map_template()
-
-        # Replace placeholders
-        html_content = template.replace("{{center_lat}}", str(center_lat))
-        html_content = html_content.replace("{{center_lon}}", str(center_lon))
-        html_content = html_content.replace("{{zoom}}", str(self.zoom_spin.value()))
-        html_content = html_content.replace("{{markers}}", json.dumps(markers))
-
-        # Create temporary HTML file
-        try:
-            # Clean up previous temp file
-            if self.temp_file_path and os.path.exists(self.temp_file_path):
-                try:
-                    os.unlink(self.temp_file_path)
-                except:
-                    pass
-
-            # Create new temp file
-            fd, self.temp_file_path = tempfile.mkstemp(suffix=".html")
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-
-            # Load the HTML file
-            self.map_view.load(QUrl.fromLocalFile(self.temp_file_path))
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to create map: {str(e)}")
+            # Create/recreate the map with current observations
+            self.create_map()
 
     def _update_map_zoom(self):
         """Update map zoom level"""
@@ -290,153 +325,3 @@ class MapDialog(QDialog):
                     "Error",
                     f"Failed to save map: {str(e)}"
                 )
-
-    def _get_map_template(self):
-        """Get HTML template for the map with extensive debugging"""
-        return """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <title>Lifelist Map</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                html, body {
-                    height: 100%;
-                    margin: 0;
-                    padding: 0;
-                    overflow: hidden;
-                }
-                #map {
-                    width: 100%;
-                    height: 100%;
-                }
-                #debug {
-                    position: absolute;
-                    top: 10px;
-                    left: 10px;
-                    background: rgba(255, 255, 255, 0.8);
-                    padding: 10px;
-                    border: 1px solid #ccc;
-                    z-index: 1000;
-                    max-width: 300px;
-                    font-size: 12px;
-                }
-            </style>
-            <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        </head>
-        <body>
-            <div id="debug">Initializing...</div>
-            <div id="map"></div>
-
-            <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-            <script>
-                const debug = document.getElementById('debug');
-
-                function log(message) {
-                    console.log(message);
-                    debug.innerHTML += '<br>' + message;
-                }
-
-                log('Script started');
-                log('Leaflet version: ' + (typeof L !== 'undefined' ? L.version : 'not loaded'));
-
-                // Wait for DOM to be fully loaded
-                document.addEventListener('DOMContentLoaded', function() {
-                    log('DOM loaded');
-                    initMap();
-                });
-
-                // Also try immediate initialization in case DOM is already loaded
-                if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                    log('DOM already ready');
-                    setTimeout(initMap, 100);
-                }
-
-                function initMap() {
-                    log('initMap() called');
-
-                    if (typeof L === 'undefined') {
-                        log('ERROR: Leaflet not loaded!');
-                        setTimeout(initMap, 100);
-                        return;
-                    }
-
-                    try {
-                        log('Creating map...');
-
-                        const centerLat = {{center_lat}};
-                        const centerLon = {{center_lon}};
-                        const zoom = {{zoom}};
-
-                        log('Map config: center=[' + centerLat + ',' + centerLon + '], zoom=' + zoom);
-
-                        const map = L.map('map', {
-                            center: [centerLat, centerLon],
-                            zoom: zoom,
-                            zoomControl: true
-                        });
-
-                        log('Map object created');
-
-                        // Add tile layer
-                        const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-                            maxZoom: 19,
-                            subdomains: ['a', 'b', 'c']
-                        });
-
-                        tileLayer.addTo(map);
-                        log('Tile layer added');
-
-                        // Add markers
-                        const markers = {{markers}};
-                        log('Markers to process: ' + markers.length);
-
-                        if (markers.length > 0) {
-                            markers.forEach(function(marker, index) {
-                                if (marker.lat !== undefined && marker.lon !== undefined) {
-                                    const m = L.marker([marker.lat, marker.lon])
-                                        .addTo(map)
-                                        .bindPopup(marker.popup);
-                                    log('Added marker ' + index + ' at [' + marker.lat + ',' + marker.lon + ']');
-                                }
-                            });
-
-                            // Fit bounds to markers
-                            const group = new L.featureGroup(markers.filter(m => m.lat !== undefined && m.lon !== undefined).map(m => 
-                                L.marker([m.lat, m.lon])
-                            ));
-                            map.fitBounds(group.getBounds().pad(0.1));
-                            log('Fitted bounds to markers');
-                        }
-
-                        log('Map initialization complete!');
-                        debug.style.display = 'none'; // Hide debug info after successful init
-
-                    } catch (error) {
-                        log('ERROR: ' + error.message);
-                        log('Stack: ' + error.stack);
-                    }
-                }
-
-                // Error handlers
-                window.onerror = function(msg, url, lineNo, columnNo, error) {
-                    log('Window Error: ' + msg + ' at line ' + lineNo);
-                    return false;
-                };
-
-                log('Script setup complete');
-            </script>
-        </body>
-        </html>
-        """
-
-    def closeEvent(self, event):
-        """Clean up temporary files when closing"""
-        if self.temp_file_path and os.path.exists(self.temp_file_path):
-            try:
-                os.unlink(self.temp_file_path)
-            except:
-                pass
-        super().closeEvent(event)
