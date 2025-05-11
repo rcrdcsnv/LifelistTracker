@@ -2,13 +2,11 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                                QPushButton, QComboBox, QDialogButtonBox,
                                QFileDialog, QMessageBox, QSpinBox)
-from PySide6.QtCore import QUrl, QTimer
+from PySide6.QtCore import QUrl
 from PySide6.QtWebEngineWidgets import QWebEngineView
 import json
 import tempfile
 import os
-from pathlib import Path
-from config import Config
 
 
 class MapDialog(QDialog):
@@ -83,21 +81,10 @@ class MapDialog(QDialog):
 
         layout.addLayout(controls_layout)
 
-        # Map view with error handling
-        try:
-            self.map_view = QWebEngineView()
-            self.map_view.loadFinished.connect(self._on_load_finished)
-
-            # Add console message handler for debugging
-            page = self.map_view.page()
-            page.javaScriptConsoleMessage.connect(self._on_console_message)
-
-            layout.addWidget(self.map_view)
-        except Exception as e:
-            error_label = QLabel(f"Error initializing map view: {str(e)}")
-            layout.addWidget(error_label)
-            self.map_view = None
-            print(f"Map initialization error: {e}")
+        # Map view - simple standard implementation
+        self.map_view = QWebEngineView()
+        self.map_view.loadFinished.connect(self._on_load_finished)
+        layout.addWidget(self.map_view)
 
         # Dialog buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Close)
@@ -188,9 +175,9 @@ class MapDialog(QDialog):
             print("Failed to load map HTML")
             QMessageBox.warning(self, "Warning", "Failed to load map. Please try again.")
 
-    def _on_console_message(self, level, message, line, source):
-        """Handle JavaScript console messages for debugging"""
-        print(f"JavaScript console [{level}]: {message} (line {line}, source: {source})")
+    #def _on_console_message(self, level, message, line, source):
+    #    """Handle JavaScript console messages for debugging"""
+    #    print(f"JavaScript console [{level}]: {message} (line {line}, source: {source})")
 
     def _create_map(self, observations):
         """Create HTML for the map"""
@@ -199,8 +186,6 @@ class MapDialog(QDialog):
 
         # Generate markers
         markers = []
-        bounds = []
-
         for obs in observations:
             if obs.latitude is not None and obs.longitude is not None:
                 marker = {
@@ -213,35 +198,29 @@ class MapDialog(QDialog):
                              f"Tier: {obs.tier or 'Unknown'}"
                 }
                 markers.append(marker)
-                bounds.append([obs.latitude, obs.longitude])
 
-        # Load map template
-        template = self._get_map_template()
-
-        # Replace placeholders
-        config = Config.load()
-        zoom = self.zoom_spin.value()
-
-        # Calculate center if we have markers
-        if bounds:
-            lat_sum = sum(b[0] for b in bounds)
-            lon_sum = sum(b[1] for b in bounds)
-            center_lat = lat_sum / len(bounds)
-            center_lon = lon_sum / len(bounds)
+        # Calculate center
+        if markers:
+            lat_sum = sum(m["lat"] for m in markers)
+            lon_sum = sum(m["lon"] for m in markers)
+            center_lat = lat_sum / len(markers)
+            center_lon = lon_sum / len(markers)
         else:
-            # Default center (0, 0)
             center_lat = 0
             center_lon = 0
 
-        # Replace placeholders
-        template = template.replace("{{center_lat}}", str(center_lat))
-        template = template.replace("{{center_lon}}", str(center_lon))
-        template = template.replace("{{zoom}}", str(zoom))
-        template = template.replace("{{markers}}", json.dumps(markers))
+        # Load template
+        template = self._get_map_template()
 
-        # Create temporary HTML file with better error handling
+        # Replace placeholders
+        html_content = template.replace("{{center_lat}}", str(center_lat))
+        html_content = html_content.replace("{{center_lon}}", str(center_lon))
+        html_content = html_content.replace("{{zoom}}", str(self.zoom_spin.value()))
+        html_content = html_content.replace("{{markers}}", json.dumps(markers))
+
+        # Create temporary HTML file
         try:
-            # Clean up previous temp file if it exists
+            # Clean up previous temp file
             if self.temp_file_path and os.path.exists(self.temp_file_path):
                 try:
                     os.unlink(self.temp_file_path)
@@ -251,9 +230,9 @@ class MapDialog(QDialog):
             # Create new temp file
             fd, self.temp_file_path = tempfile.mkstemp(suffix=".html")
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                f.write(template)
+                f.write(html_content)
 
-            # Load HTML into WebView
+            # Load the HTML file
             self.map_view.load(QUrl.fromLocalFile(self.temp_file_path))
 
         except Exception as e:
@@ -306,7 +285,7 @@ class MapDialog(QDialog):
                 )
 
     def _get_map_template(self):
-        """Get HTML template for the map"""
+        """Get HTML template for the map with extensive debugging"""
         return """
         <!DOCTYPE html>
         <html>
@@ -319,98 +298,128 @@ class MapDialog(QDialog):
                     height: 100%;
                     margin: 0;
                     padding: 0;
+                    overflow: hidden;
                 }
                 #map {
                     width: 100%;
                     height: 100%;
                 }
-                .loading {
-                    text-align: center;
-                    padding: 50px;
-                    font-family: Arial, sans-serif;
-                    font-size: 16px;
-                    color: #333;
-                }
-                .error {
-                    color: #d32f2f;
-                    background-color: #ffebee;
-                    border: 1px solid #ffcdd2;
+                #debug {
+                    position: absolute;
+                    top: 10px;
+                    left: 10px;
+                    background: rgba(255, 255, 255, 0.8);
                     padding: 10px;
-                    margin: 10px;
-                    border-radius: 4px;
+                    border: 1px solid #ccc;
+                    z-index: 1000;
+                    max-width: 300px;
+                    font-size: 12px;
                 }
             </style>
-            <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
-            <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+            <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
         </head>
         <body>
+            <div id="debug">Initializing...</div>
             <div id="map"></div>
-            <div id="loading" class="loading">Loading map...</div>
+
+            <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
             <script>
+                const debug = document.getElementById('debug');
+
+                function log(message) {
+                    console.log(message);
+                    debug.innerHTML += '<br>' + message;
+                }
+
+                log('Script started');
+                log('Leaflet version: ' + (typeof L !== 'undefined' ? L.version : 'not loaded'));
+
+                // Wait for DOM to be fully loaded
+                document.addEventListener('DOMContentLoaded', function() {
+                    log('DOM loaded');
+                    initMap();
+                });
+
+                // Also try immediate initialization in case DOM is already loaded
+                if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                    log('DOM already ready');
+                    setTimeout(initMap, 100);
+                }
+
+                function initMap() {
+                    log('initMap() called');
+
+                    if (typeof L === 'undefined') {
+                        log('ERROR: Leaflet not loaded!');
+                        setTimeout(initMap, 100);
+                        return;
+                    }
+
+                    try {
+                        log('Creating map...');
+
+                        const centerLat = {{center_lat}};
+                        const centerLon = {{center_lon}};
+                        const zoom = {{zoom}};
+
+                        log('Map config: center=[' + centerLat + ',' + centerLon + '], zoom=' + zoom);
+
+                        const map = L.map('map', {
+                            center: [centerLat, centerLon],
+                            zoom: zoom,
+                            zoomControl: true
+                        });
+
+                        log('Map object created');
+
+                        // Add tile layer
+                        const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                            maxZoom: 19,
+                            subdomains: ['a', 'b', 'c']
+                        });
+
+                        tileLayer.addTo(map);
+                        log('Tile layer added');
+
+                        // Add markers
+                        const markers = {{markers}};
+                        log('Markers to process: ' + markers.length);
+
+                        if (markers.length > 0) {
+                            markers.forEach(function(marker, index) {
+                                if (marker.lat !== undefined && marker.lon !== undefined) {
+                                    const m = L.marker([marker.lat, marker.lon])
+                                        .addTo(map)
+                                        .bindPopup(marker.popup);
+                                    log('Added marker ' + index + ' at [' + marker.lat + ',' + marker.lon + ']');
+                                }
+                            });
+
+                            // Fit bounds to markers
+                            const group = new L.featureGroup(markers.filter(m => m.lat !== undefined && m.lon !== undefined).map(m => 
+                                L.marker([m.lat, m.lon])
+                            ));
+                            map.fitBounds(group.getBounds().pad(0.1));
+                            log('Fitted bounds to markers');
+                        }
+
+                        log('Map initialization complete!');
+                        debug.style.display = 'none'; // Hide debug info after successful init
+
+                    } catch (error) {
+                        log('ERROR: ' + error.message);
+                        log('Stack: ' + error.stack);
+                    }
+                }
+
+                // Error handlers
                 window.onerror = function(msg, url, lineNo, columnNo, error) {
-                    var errorDiv = document.createElement('div');
-                    errorDiv.className = 'error';
-                    errorDiv.innerHTML = '<h3>Map Error</h3><p>' + msg + '</p>';
-                    document.body.appendChild(errorDiv);
-                    console.error('Window error:', msg, 'Line:', lineNo, 'Column:', columnNo, error);
+                    log('Window Error: ' + msg + ' at line ' + lineNo);
                     return false;
                 };
 
-                try {
-                    console.log('Starting map initialization...');
-
-                    // Hide loading message
-                    document.getElementById('loading').style.display = 'none';
-
-                    var center_lat = {{center_lat}};
-                    var center_lon = {{center_lon}};
-                    var zoom = {{zoom}};
-
-                    console.log('Creating map at:', center_lat, center_lon, 'zoom:', zoom);
-
-                    var map = L.map('map').setView([center_lat, center_lon], zoom);
-
-                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-                        maxZoom: 19,
-                        errorTileUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAAACXBIWXMAAAsTAAALEwEAmpwYAAAKTWlDQ1BQaG90b3Nob3AgSUNDIHByb2ZpbGUAAHjanVN3WJP3Fj7f92UPVkLY8LGXbIEAIiOsCMgQWaIQkgBhhBASQMWFiApWFBURnEhVxILVCkidiOKgKLhnQYqIWotVXDjuH9yntX167+3t+9f7vOec5/zOec8PgBESJpHmomoAOVKFPDrYH49PSMTJvYACFUjgBCAQ5svCZwXFAADwA3l4fnSwP/wBr28AAgBw1S4kEsfh/4O6UCZXACCRAOAiEucLAZBSAMguVMgUAMgYALBTs2QKAJQAAGx5fEIiAKoNAOz0ST4FANipk9wXANiiHKkIAI0BAJkoRyQCQLsAYFWBUiwCwMIAoKxAIi4EwK4BgFm2MkcCgL0FAHaOWJAPQGAAgJlCLMwAIDgCAEMeE80DIEwDoDDSv+CpX3CFuEgBAMDLlc2XS9IzFLiV0Bp38vDg4iHiwmyxQmEXKRBmCeQinJebIxNI5wNMzgwAABr50cH+OD+Q5+bk4eZm52zv9MWi/mvwbyI+IfHf/ryMAgQAEE7P79pf5eXWA3DHAbB1v2upWwDaVgBo3/ldM9sJoFoK0Hr5i3k4/EAenqFQyDwdHAoLC+0lYqG9MOOLPv8z4W/gi372/EAe/tt68ABxmkCZrcCjg/1xYW52rlKO58sEQjFu9+cj/seFf/2OKdHiNLFcLBWK8ViJuFAiTcd5uVKRRCHJleIS6X8y8R+W/QmTdw0ArIZPwE62B7XLbMB+7gECiw5Y0nYAQH7zLYwaC5EAEGc0Mnn3AACTv/mPQCsBAM2XpOMAALzoGFyolBdMxggAAESggSqwQQcMwRSswA6cwR28wBcCYQZEQAwkwDwQQgbkgBwKoRiWQRlUwDrYBLWwAxqgEZrhELTBMTgN5+ASXIHrcBcGYBiewhi8hgkEQcgIE2EhOogRYo7YIs4IF5mOBCJhSDSSgKQg6YgUUSLFyHKkAqlCapFdSCPyLXIUOY1cQPqQ28ggMor8irxHMZSBslED1AJ1QLmoHxqKxqBz0XQ0D12AlqJr0Rq0Hj2AtqKn0UvodXQAfYqOY4DRMQ5mjNlhXIyHRWCJWBomxxZj5Vg1Vo81Yx1YN3YVG8CeYe8IJAKLgBPsCF6EEMJsgpCQR1hMWEOoJewjtBK6CFcJg4Qxwicik6hPtCV6EvnEeGI6sZBYRqwm7iEeIZ4lXicOE1+TSCQOyZLkTgohJZAySQtJa0jbSC2kU6Q+0hBpnEwm65Btyd7kCLKArCCXkbeQD5BPkvvJw+S3FDrFiOJMCaIkUqSUEko1ZT/lBKWfMkKZoKpRzame1AiqiDqfWkltoHZQL1OHqRM0dZolzZsWQ8ukLaPV0JppZ2n3aC/pdLoJ3YMeRZfQl9Jr6Afp5+mD9HcMDYYNg8dIYigZaxl7GacYtxkvmUymBdOXmchUMNcyG5lnmA+Yb1VYKvYqfBWRyhKVOpVWlX6V56pUVXNVP9V5qgtUq1UPq15WfaZGVbNQ46kJ1Bar1akdVbupNq7OUndSj1DPUV+jvl/9gvpjDbKGhUaghkijVGO3xhmNIRbGMmXxWELWclYD6yxrmE1iW7L5rLWsS6xFrOusum1N2zpN2rVTN"'},
-                    ]).addTo(map);
-
-                    var markers = {{markers}};
-                    console.log('Markers to add:', markers.length);
-
-                    var markerInstances = [];
-                    markers.forEach(function(marker, index) {
-                        if (marker.lat !== undefined && marker.lon !== undefined) {
-                            console.log('Adding marker', index, 'at', marker.lat, marker.lon);
-                            var m = L.marker([marker.lat, marker.lon])
-                                .addTo(map)
-                                .bindPopup(marker.popup);
-                            markerInstances.push(m);
-                        } else {
-                            console.warn('Skipping marker', index, 'due to missing coordinates');
-                        }
-                    });
-
-                    // Fit map to markers if any exist
-                    if (markerInstances.length > 0) {
-                        console.log('Fitting bounds to', markerInstances.length, 'markers');
-                        var group = new L.featureGroup(markerInstances);
-                        map.fitBounds(group.getBounds().pad(0.1));
-                    } else {
-                        console.log('No markers to fit bounds to, using default view');
-                    }
-
-                    console.log('Map initialization complete');
-
-                } catch (error) {
-                    console.error('Error loading map:', error);
-                    var errorDiv = document.createElement('div');
-                    errorDiv.className = 'error';
-                    errorDiv.innerHTML = '<h3>Error loading map</h3><p>' + error.message + '</p><p>Please check the browser console for more details.</p>';
-                    document.body.appendChild(errorDiv);
-                    document.getElementById('loading').innerHTML = 'Error: ' + error.message;
-                }
+                log('Script setup complete');
             </script>
         </body>
         </html>
