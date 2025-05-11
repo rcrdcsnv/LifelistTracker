@@ -7,6 +7,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 import json
 import tempfile
 import os
+from PySide6.QtWebEngineCore import QWebEngineSettings
 
 
 class MapDialog(QDialog):
@@ -81,8 +82,14 @@ class MapDialog(QDialog):
 
         layout.addLayout(controls_layout)
 
-        # Map view - simple standard implementation
+        # Map view with necessary settings
         self.map_view = QWebEngineView()
+
+        # Enable essential settings for external resource loading
+        settings = self.map_view.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+
         self.map_view.loadFinished.connect(self._on_load_finished)
         layout.addWidget(self.map_view)
 
