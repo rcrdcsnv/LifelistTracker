@@ -79,143 +79,167 @@ class DataService:
         self.photo_manager = photo_manager
 
     def export_lifelist(self, session: Session, lifelist_id: int,
-                        export_path: Union[str, Path], include_photos: bool = True) -> bool:
-        """
-        Export a lifelist to a portable format
-
-        Args:
-            session: Database session
-            lifelist_id: ID of the lifelist to export
-            export_path: Directory to export to
-            include_photos: Whether to include photos in the export
-
-        Returns:
-            True if successful, False otherwise
-        """
+                        export_path: Union[str, Path], include_photos: bool = True,
+                        batch_size: int = 100, progress_callback=None) -> bool:
+        """Export lifelist using chunked processing for memory efficiency"""
         try:
             export_path = Path(export_path)
             export_path.mkdir(parents=True, exist_ok=True)
 
-            # Get lifelist
-            lifelist_query = session.query(
-                Lifelist.id, Lifelist.name, Lifelist.classification,
-                Lifelist.lifelist_type_id, Lifelist.lifelist_type
-            ).filter(Lifelist.id == lifelist_id)
-
-            lifelist_tuple = lifelist_query.first()
-            if not lifelist_tuple:
+            # Get lifelist metadata
+            lifelist_data = self._get_lifelist_metadata(session, lifelist_id)
+            if not lifelist_data:
                 return False
 
-            # Create export data structure
-            lifelist_data = LifelistExportData(
-                id=lifelist_tuple.id,
-                name=lifelist_tuple.name,
-                classification=lifelist_tuple.classification,
-                lifelist_type_id=lifelist_tuple.lifelist_type_id,
-                lifelist_type=lifelist_tuple.lifelist_type.name if lifelist_tuple.lifelist_type else None,
-                tiers=[]
-            )
-
-            # Get tiers
-            tiers = session.query(Lifelist.tiers).filter(
-                Lifelist.id == lifelist_id
-            ).all()
-            lifelist_data.tiers = [tier.tier_name for tier in tiers]
-
-            # Get custom fields
-            custom_fields = session.query(CustomField).filter(
-                CustomField.lifelist_id == lifelist_id
-            ).order_by(CustomField.display_order).all()
-
-            for field in custom_fields:
-                field_options = field.field_options
-                if isinstance(field_options, str):
-                    field_options = json.loads(field_options)
-
-                lifelist_data.custom_fields.append(
-                    CustomFieldDefinition(
-                        id=field.id,
-                        name=field.field_name,
-                        type=field.field_type,
-                        options=field_options,
-                        required=1 if field.is_required else 0,
-                        order=field.display_order
-                    )
-                )
-
-            # Get observations
-            observations = session.query(Observation).filter(
-                Observation.lifelist_id == lifelist_id
-            ).all()
-
-            # Create photos directory if including photos
+            # Create photos directory
             photos_dir = export_path / "photos"
             if include_photos:
                 photos_dir.mkdir(exist_ok=True)
 
-            # Process each observation
-            for obs in observations:
-                obs_data = ObservationData(
-                    id=obs.id,
-                    entry_name=obs.entry_name,
-                    observation_date=obs.observation_date,
-                    location=obs.location,
-                    latitude=obs.latitude,
-                    longitude=obs.longitude,
-                    tier=obs.tier,
-                    notes=obs.notes
-                )
+            # Export using streaming JSON
+            json_path = export_path / f"{lifelist_data['name']}.json"
 
-                # Get custom field values
-                for cf_value in obs.custom_fields:
-                    field_name = cf_value.field.field_name
-                    obs_data.custom_fields.append(
-                        CustomFieldValue(
-                            field_name=field_name,
-                            value=cf_value.value
-                        )
-                    )
-
-                # Get tags
-                for tag in obs.tags:
-                    obs_data.tags.append(
-                        TagData(
-                            name=tag.name,
-                            category=tag.category
-                        )
-                    )
-
-                # Get photos
-                for photo in obs.photos:
-                    photo_filename = Path(photo.file_path).name
-                    photo_data = PhotoData(
-                        id=photo.id,
-                        file_name=photo_filename,
-                        is_primary=photo.is_primary,
-                        latitude=photo.latitude,
-                        longitude=photo.longitude,
-                        taken_date=photo.taken_date
-                    )
-                    obs_data.photos.append(photo_data)
-
-                    # Copy photo file if including photos
-                    if include_photos and photo.file_path:
-                        source_path = Path(photo.file_path)
-                        if source_path.exists():
-                            shutil.copy2(source_path, photos_dir / photo_filename)
-
-                lifelist_data.observations.append(obs_data)
-
-            # Write the JSON file
-            json_path = export_path / f"{lifelist_data.name}.json"
             with open(json_path, 'w') as f:
-                f.write(lifelist_data.model_dump_json(indent=2))
+                # Write header
+                f.write('{\n')
+                f.write(f'  "metadata": {json.dumps(lifelist_data, indent=2)},\n')
+                f.write('  "observations": [\n')
+
+                # Export observations in chunks
+                offset = 0
+                is_first = True
+                total_exported = 0
+
+                while True:
+                    # Get chunk of observations
+                    observations = session.query(Observation).filter(
+                        Observation.lifelist_id == lifelist_id
+                    ).offset(offset).limit(batch_size).all()
+
+                    if not observations:
+                        break
+
+                    for obs in observations:
+                        # Serialize observation
+                        obs_data = self._serialize_observation(obs, include_photos, photos_dir)
+
+                        # Write to file
+                        if not is_first:
+                            f.write(',\n')
+                        f.write(f'    {json.dumps(obs_data)}')
+                        is_first = False
+                        total_exported += 1
+
+                    # Clear session cache to free memory
+                    session.expire_all()
+                    offset += batch_size
+
+                    # Update progress
+                    if progress_callback:
+                        progress_callback(total_exported)
+
+                # Write footer
+                f.write('\n  ]\n}')
 
             return True
 
         except Exception as e:
             print(f"Export error: {e}")
             return False
+
+    def _get_lifelist_metadata(self, session: Session, lifelist_id: int) -> Optional[Dict]:
+        """Get lifelist metadata for export"""
+        from db.repositories import LifelistRepository
+
+        lifelist = LifelistRepository.get_lifelist(session, lifelist_id)
+        if not lifelist:
+            return None
+
+        # Get tiers
+        tiers = LifelistRepository.get_lifelist_tiers(session, lifelist_id)
+
+        # Get custom fields
+        custom_fields = session.query(CustomField).filter(
+            CustomField.lifelist_id == lifelist_id
+        ).order_by(CustomField.display_order).all()
+
+        fields_data = []
+        for field in custom_fields:
+            field_options = field.field_options
+            if isinstance(field_options, str):
+                field_options = json.loads(field_options)
+
+            fields_data.append({
+                'id': field.id,
+                'name': field.field_name,
+                'type': field.field_type,
+                'options': field_options,
+                'required': 1 if field.is_required else 0,
+                'order': field.display_order
+            })
+
+        # Get lifelist type name
+        from db.models import LifelistType
+        lifelist_type = session.query(LifelistType).filter(
+            LifelistType.id == lifelist[3]
+        ).first()
+
+        return {
+            'id': lifelist[0],
+            'name': lifelist[1],
+            'classification': lifelist[2],
+            'lifelist_type_id': lifelist[3],
+            'lifelist_type': lifelist_type.name if lifelist_type else None,
+            'tiers': tiers,
+            'custom_fields': fields_data
+        }
+
+    def _serialize_observation(self, obs, include_photos, photos_dir):
+        """Serialize single observation to dictionary"""
+        obs_data = {'id': obs.id, 'entry_name': obs.entry_name,
+                    'observation_date': obs.observation_date.isoformat() if obs.observation_date else None,
+                    'location': obs.location, 'latitude': obs.latitude, 'longitude': obs.longitude, 'tier': obs.tier,
+                    'notes': obs.notes, 'custom_fields': [
+                {'field_name': cf.field.field_name, 'value': cf.value}
+                for cf in obs.custom_fields
+            ], 'tags': [
+                {'name': tag.name, 'category': tag.category}
+                for tag in obs.tags
+            ], 'photos': []}
+
+        # Add relationships
+
+        # Handle photos with copying
+        for photo in obs.photos:
+            photo_data = self._serialize_photo(photo)
+
+            if include_photos and photo.file_path:
+                self._copy_photo_safely(photo.file_path, photos_dir, photo_data['file_name'])
+
+            obs_data['photos'].append(photo_data)
+
+        return obs_data
+
+    def _serialize_photo(self, photo) -> Dict:
+        """Serialize photo to dictionary"""
+        return {
+            'id': photo.id,
+            'file_name': Path(photo.file_path).name,
+            'is_primary': photo.is_primary,
+            'latitude': photo.latitude,
+            'longitude': photo.longitude,
+            'taken_date': photo.taken_date.isoformat() if photo.taken_date else None
+        }
+
+    def _copy_photo_safely(self, source_path: str, photos_dir: Path, filename: str):
+        """Safely copy photo file"""
+        try:
+            source = Path(source_path)
+            if source.exists():
+                dest = photos_dir / filename
+                shutil.copy2(source, dest)
+        except Exception as e:
+            print(f"Failed to copy photo {source_path}: {e}")
 
     def import_lifelist(self, session: Session, json_path: Union[str, Path],
                         photos_dir: Optional[Union[str, Path]] = None) -> Tuple[bool, str]:
@@ -403,11 +427,12 @@ class DataService:
                 # Check if we have at least a name
                 if "name" in entry_data and entry_data["name"]:
                     # Collect additional data (unmapped columns)
-                    additional_data = {}
-                    for column in df.columns:
-                        if column not in field_mappings.values() and pd.notna(row[column]):
-                            additional_data[column] = str(row[column])
-
+                    additional_data = {
+                        column: str(row[column])
+                        for column in df.columns
+                        if column not in field_mappings.values()
+                        and pd.notna(row[column])
+                    }
                     # Add the entry
                     entry = ClassificationEntry(
                         classification_id=classification.id,

@@ -6,6 +6,7 @@ from PySide6.QtCore import QCoreApplication, Qt
 
 from config import Config
 from db.base import DatabaseManager
+from db.session_manager import SessionManager
 from services.photo_manager import PhotoManager
 from services.data_service import DataService
 from ui.main_window import MainWindow
@@ -40,12 +41,15 @@ def main():
     db_manager = DatabaseManager(db_path)
     db_manager.create_tables()
 
+    # Create session manager
+    session_manager = SessionManager(db_manager)
+
     # Create services
     photo_manager = PhotoManager(storage_dir)
     data_service = DataService(photo_manager)
 
-    # Create main window
-    window = MainWindow(config, db_manager, photo_manager, data_service)
+    # Create main window with session manager
+    window = MainWindow(config, db_manager, photo_manager, data_service, session_manager)
     window.show()
 
     # Start the event loop

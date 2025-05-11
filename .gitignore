@@ -1,2 +1,3 @@
 lifelists.db
 *.pyc
+/tests/test_performance.db

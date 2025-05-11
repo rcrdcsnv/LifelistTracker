@@ -1,6 +1,6 @@
 # ui/views/observation_view.py
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                               QPushButton, QFrame, QScrollArea, QGridLayout)
+                               QPushButton, QFrame, QScrollArea, QGridLayout, QMessageBox)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PIL.ImageQt import ImageQt
@@ -17,6 +17,16 @@ class ObservationView(QWidget):
 
         # Keep references to images
         self.images = []
+
+        # Add view session
+        self.view_session = None
+        self.current_observation_data = None
+        self.current_observation_id = None
+
+        # Progressive loading state
+        self.photos_loaded = False
+        self.custom_fields_loaded = False
+        self.tags_loaded = False
 
         self._setup_ui()
 
@@ -108,146 +118,92 @@ class ObservationView(QWidget):
         self.content_layout.addStretch()
 
     def load_observation(self, observation_id):
-        """Load and display an observation"""
-        self.images = []  # Clear image references
+        """Load observation with progressive loading strategy"""
         self.current_observation_id = observation_id
+        self.photos_loaded = False
+        self.custom_fields_loaded = False
+        self.tags_loaded = False
 
-        # Clear existing content
-        self._clear_content()
+        # Close previous session if exists
+        if self.view_session:
+            self.view_session.close()
 
-        with self.db_manager.session_scope() as session:
-            # Get the observation details
-            query = session.query(
-                self.db_manager.engine.models.Observation
-            ).filter_by(id=observation_id)
+        # Create view-scoped session
+        self.view_session = self.main_window.db_manager.Session()
 
-            observation = query.first()
+        try:
+            # Get basic observation data with eager loading
+            with self.main_window.db_manager.session_scope() as session:
+                from db.repositories import ObservationRepository
+                self.current_observation_data = ObservationRepository.get_observation_with_eager_loading(
+                    session, observation_id
+                )
 
-            if not observation:
-                self.title_label.setText("Observation not found")
-                return
+                if not self.current_observation_data:
+                    self.title_label.setText("Observation not found")
+                    return
 
-            # Get the lifelist to determine entry_term and observation_term
-            from config import Config
-            config = Config.load()
-
-            lifelist_id = observation.lifelist_id
+            # Get lifelist info for terminology
+            lifelist_id = self.current_observation_data['lifelist_id']
             from db.repositories import LifelistRepository
-            lifelist = LifelistRepository.get_lifelist(session, lifelist_id)
+            with self.main_window.db_manager.session_scope() as session:
+                if lifelist := LifelistRepository.get_lifelist(
+                    session, lifelist_id
+                ):
+                    lifelist_type = lifelist[4] if lifelist else ""
 
-            lifelist_type = lifelist[4] if lifelist else ""
-            entry_term = config.get_entry_term(lifelist_type)
-            observation_term = config.get_observation_term(lifelist_type)
+                    # Get terminology
+                    from config import Config
+                    config = Config.load()
+                    entry_term = config.get_entry_term(lifelist_type)
+                    observation_term = config.get_observation_term(lifelist_type)
+                else:
+                    entry_term = "item"
+                    observation_term = "entry"
 
-            # Update title
-            self.title_label.setText(f"{observation_term.capitalize()}: {observation.entry_name}")
+            # Display basic info immediately
+            self._display_basic_info(entry_term, observation_term)
 
-            # Load photos
-            self._load_photos(session, observation)
+            # Load photos if present
+            if self.current_observation_data['photos']:
+                self._load_photos_section()
+                self.photos_loaded = True
 
-            # Display details
-            self._display_details(observation, entry_term, observation_term)
+            # Create placeholders for other sections
+            self._create_section_placeholders()
 
-            # Display custom fields
-            self._display_custom_fields(observation)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load observation: {str(e)}")
+            if self.view_session:
+                self.view_session.close()
+                self.view_session = None
 
-            # Display tags
-            self._display_tags(observation)
+    def _display_basic_info(self, entry_term, observation_term):
+        """Display basic observation info from cached data"""
+        data = self.current_observation_data
+        self.title_label.setText(f"{observation_term.capitalize()}: {data['entry_name']}")
 
-    def _clear_content(self):
-        """Clear all content areas"""
-        # Clear photos
-        self.primary_photo_label.clear()
+        details = [
+            ("Entry Name:", data['entry_name']),
+            ("Date:", data['observation_date'].strftime("%Y-%m-%d") if data['observation_date'] else "Not recorded"),
+            ("Location:", data['location'] or "Not recorded"),
+            ("Coordinates:",
+             f"{data['latitude']}, {data['longitude']}" if data['latitude'] and data['longitude'] else "Not recorded"),
+            ("Tier:", data['tier'] or "Not specified"),
+            ("Notes:", data['notes'] or "No notes")
+        ]
 
-        # Clear thumbnails
-        while self.thumbnails_layout.count():
-            item = self.thumbnails_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        self._update_details_grid(details)
 
-        # Clear details
+    def _update_details_grid(self, details):
+        """Update the details grid with given details"""
+        # Clear existing details
         while self.details_layout.count():
             item = self.details_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
-        # Clear custom fields
-        while self.custom_fields_layout.count() > 1:  # Keep the header
-            item = self.custom_fields_layout.takeAt(1)
-            if item.widget():
-                item.widget().deleteLater()
-
-        # Clear tags
-        while self.tags_container_layout.count():
-            item = self.tags_container_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-    def _load_photos(self, observation):
-        """Load and display photos for the observation"""
-        photos = observation.photos
-
-        if not photos:
-            self.photo_frame.hide()
-            return
-
-        self.photo_frame.show()
-
-        # Find primary photo, or use first one
-        primary_photo = next((p for p in photos if p.is_primary), photos[0] if photos else None)
-
-        if primary_photo:
-            lifelist_id = observation.lifelist_id
-            observation_id = observation.id
-
-            # Load large primary photo
-            primary_image = self.photo_manager.get_photo_thumbnail(
-                lifelist_id, observation_id, primary_photo.id, "lg"
-            )
-
-            if primary_image:
-                # Convert PIL image to QPixmap
-                q_image = ImageQt(primary_image)
-                pixmap = QPixmap.fromImage(q_image)
-
-                self.primary_photo_label.setPixmap(pixmap)
-                self.images.append(pixmap)  # Keep reference
-
-        # Add thumbnails if there are multiple photos
-        if len(photos) > 1:
-            for photo in photos:
-                if thumb_image := self.photo_manager.get_photo_thumbnail(
-                    observation.lifelist_id, observation.id, photo.id, "sm"
-                ):
-                    # Create thumbnail label
-                    thumb_label = QLabel()
-
-                    # Convert PIL image to QPixmap
-                    q_image = ImageQt(thumb_image)
-                    pixmap = QPixmap.fromImage(q_image)
-
-                    thumb_label.setPixmap(pixmap)
-                    self.thumbnails_layout.addWidget(thumb_label)
-
-                    # Highlight if primary
-                    if photo.is_primary:
-                        thumb_label.setStyleSheet("border: 2px solid #3498db;")
-
-                    self.images.append(pixmap)  # Keep reference
-
-    def _display_details(self, observation, observation_term):
-        """Display observation details"""
-        details = [
-            ("Entry Name:", observation.entry_name),
-            (f"{observation_term.capitalize()} Date:",
-             observation.observation_date.strftime("%Y-%m-%d") if observation.observation_date else "Not recorded"),
-            ("Location:", observation.location or "Not recorded"),
-            ("Coordinates:",
-             f"{observation.latitude}, {observation.longitude}" if observation.latitude and observation.longitude else "Not recorded"),
-            ("Tier:", observation.tier or "Not specified"),
-            ("Notes:", observation.notes or "No notes")
-        ]
-
+        # Add details
         row = 0
         for label_text, value_text in details:
             # Create label widget
@@ -264,9 +220,92 @@ class ObservationView(QWidget):
 
             row += 1
 
-    def _display_custom_fields(self, observation):
+    def _create_section_placeholders(self):
+        """Create UI placeholders for sections that can be loaded on demand"""
+        # Custom fields placeholder
+        if self.current_observation_data['custom_fields'] and not self.custom_fields_loaded:
+            placeholder = QPushButton("Load Custom Fields")
+            placeholder.clicked.connect(lambda: self._load_section('custom_fields'))
+            self.custom_fields_layout.addWidget(placeholder)
+
+        # Tags placeholder  
+        if self.current_observation_data['tags'] and not self.tags_loaded:
+            placeholder = QPushButton("Load Tags")
+            placeholder.clicked.connect(lambda: self._load_section('tags'))
+            self.tags_layout.addWidget(placeholder)
+
+    def _load_section(self, section_name):
+        """Load a specific section on demand"""
+        data = self.current_observation_data
+
+        if section_name == 'custom_fields' and not self.custom_fields_loaded:
+            self._display_custom_fields(data['custom_fields'])
+            self.custom_fields_loaded = True
+
+        elif section_name == 'tags' and not self.tags_loaded:
+            self._display_tags(data['tags'])
+            self.tags_loaded = True
+
+    def _load_photos_section(self):
+        """Load and display photos for the observation"""
+        data = self.current_observation_data
+        photos = data['photos']
+
+        if not photos:
+            self.photo_frame.hide()
+            return
+
+        self.photo_frame.show()
+
+        # Find primary photo, or use first one
+        primary_photo = next((p for p in photos if p['is_primary']), photos[0] if photos else None)
+
+        if primary_photo:
+            lifelist_id = data['lifelist_id']
+            observation_id = data['id']
+
+            # Load large primary photo
+            primary_image = self.photo_manager.get_photo_thumbnail(
+                lifelist_id, observation_id, primary_photo['id'], "lg"
+            )
+
+            if primary_image:
+                # Convert PIL image to QPixmap
+                q_image = ImageQt(primary_image)
+                pixmap = QPixmap.fromImage(q_image)
+
+                self.primary_photo_label.setPixmap(pixmap)
+                self.images.append(pixmap)  # Keep reference
+
+        # Add thumbnails if there are multiple photos
+        if len(photos) > 1:
+            for photo in photos:
+                if thumb_image := self.photo_manager.get_photo_thumbnail(
+                        data['lifelist_id'], data['id'], photo['id'], "sm"
+                ):
+                    # Create thumbnail label
+                    thumb_label = QLabel()
+
+                    # Convert PIL image to QPixmap
+                    q_image = ImageQt(thumb_image)
+                    pixmap = QPixmap.fromImage(q_image)
+
+                    thumb_label.setPixmap(pixmap)
+                    self.thumbnails_layout.addWidget(thumb_label)
+
+                    # Highlight if primary
+                    if photo['is_primary']:
+                        thumb_label.setStyleSheet("border: 2px solid #3498db;")
+
+                    self.images.append(pixmap)  # Keep reference
+
+    def _display_custom_fields(self, custom_fields):
         """Display custom fields for the observation"""
-        custom_fields = observation.custom_fields
+        # Clear the placeholder button
+        while self.custom_fields_layout.count() > 1:  # Keep the header
+            item = self.custom_fields_layout.takeAt(1)
+            if item.widget():
+                item.widget().deleteLater()
 
         if not custom_fields:
             # Hide section if no custom fields
@@ -281,11 +320,11 @@ class ObservationView(QWidget):
 
         for row, field in enumerate(custom_fields):
             # Create label
-            label = QLabel(f"{field.field.field_name}:")
+            label = QLabel(f"{field['field_name']}:")
             label.setStyleSheet("font-weight: bold;")
 
             # Create value
-            value = QLabel(field.value or "Not specified")
+            value = QLabel(field['value'] or "Not specified")
             value.setWordWrap(True)
 
             # Add to grid
@@ -294,9 +333,13 @@ class ObservationView(QWidget):
 
         self.custom_fields_layout.addWidget(grid_frame)
 
-    def _display_tags(self, observation):
+    def _display_tags(self, tags):
         """Display observation tags"""
-        tags = observation.tags
+        # Clear existing tags
+        while self.tags_container_layout.count():
+            item = self.tags_container_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
         if not tags:
             # Hide section if no tags
@@ -308,10 +351,10 @@ class ObservationView(QWidget):
         # Group tags by category
         tags_by_category = {}
         for tag in tags:
-            category = tag.category or "Uncategorized"
+            category = tag['category'] or "Uncategorized"
             if category not in tags_by_category:
                 tags_by_category[category] = []
-            tags_by_category[category].append(tag.name)
+            tags_by_category[category].append(tag['name'])
 
         # Add each category in its own container
         for category, tag_names in tags_by_category.items():
@@ -350,3 +393,10 @@ class ObservationView(QWidget):
         self.main_window.show_observation_form(
             observation_id=self.current_observation_id
         )
+
+    def closeEvent(self, event):
+        """Clean up session when view closes"""
+        if self.view_session:
+            self.view_session.close()
+            self.view_session = None
+        super().closeEvent(event)

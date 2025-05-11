@@ -1,12 +1,13 @@
 # ui/main_window.py
 from PySide6.QtWidgets import (QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
                                QPushButton, QLabel, QStackedWidget, QScrollArea,
-                               QFrame, QSplitter, QTabWidget, QMessageBox)
-from PySide6.QtCore import Qt, Signal, Slot, QSize
-from PySide6.QtGui import QIcon, QAction
+                               QFrame, QMessageBox)
+from PySide6.QtCore import Qt, Slot
+from PySide6.QtGui import QAction
 
 from config import Config
 from db.base import DatabaseManager
+from db.session_manager import SessionManager
 from services.photo_manager import PhotoManager
 from services.data_service import DataService
 from ui.views.welcome_view import WelcomeView
@@ -19,13 +20,15 @@ class MainWindow(QMainWindow):
     """Main application window"""
 
     def __init__(self, config: Config, db_manager: DatabaseManager,
-                 photo_manager: PhotoManager, data_service: DataService):
+                 photo_manager: PhotoManager, data_service: DataService,
+                 session_manager: SessionManager):
         super().__init__()
 
         self.config = config
         self.db_manager = db_manager
         self.photo_manager = photo_manager
         self.data_service = data_service
+        self.session_manager = session_manager
 
         # Current state
         self.current_lifelist_id = None
@@ -165,8 +168,8 @@ class MainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
 
-        # Get lifelists
-        with self.db_manager.session_scope() as session:
+        # Get lifelists using session manager
+        with self.session_manager.list_session() as session:
             from db.repositories import LifelistRepository
             lifelists = LifelistRepository.get_lifelists(session)
 
@@ -194,7 +197,7 @@ class MainWindow(QMainWindow):
                 # Create a label for this type
                 type_label = QLabel(type_name)
                 type_label.setStyleSheet(
-                    "background-color: #444; border-radius: 4px; padding: 4px;"
+                    "background-color: #444; color: white; padding: 4px; border-radius: 4px;"
                 )
                 self.sidebar_content_layout.addWidget(type_label)
 
@@ -241,8 +244,7 @@ class MainWindow(QMainWindow):
 
         wizard = LifelistWizard(self, self.db_manager)
         if wizard.exec():
-            lifelist_id = wizard.get_lifelist_id()
-            if lifelist_id:
+            if lifelist_id := wizard.get_lifelist_id():
                 self.open_lifelist(lifelist_id)
 
     def _import_lifelist(self):
@@ -290,3 +292,12 @@ class MainWindow(QMainWindow):
         self.current_observation_id = observation_id
         self.content_area.setCurrentWidget(self.observation_form)
         self.observation_form.load_form(lifelist_id, observation_id, entry_name)
+
+    def closeEvent(self, event):
+        """Clean up when the application is closing"""
+        # Close all view sessions
+        for view_id in list(self.session_manager._view_sessions.keys()):
+            self.session_manager.close_view_session(view_id)
+
+        # Call parent close event
+        super().closeEvent(event)

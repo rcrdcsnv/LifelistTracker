@@ -273,7 +273,8 @@ class ObservationForm(QWidget):
     def _load_tag_categories(self, session):
         """Load available tag categories"""
         # Get all tags
-        all_tags = session.query(self.db_manager.engine.models.Tag).all()
+        from db.models import Tag
+        all_tags = session.query(Tag).all()
 
         # Extract unique categories
         categories = list(set(tag.category for tag in all_tags if tag.category))
@@ -291,11 +292,10 @@ class ObservationForm(QWidget):
         self.custom_field_widgets = {}
 
         # Get custom fields
-        custom_fields = session.query(
-            self.db_manager.engine.models.CustomField
-        ).filter_by(lifelist_id=lifelist_id).order_by(
-            self.db_manager.engine.models.CustomField.display_order
-        ).all()
+        from db.models import CustomField
+        custom_fields = session.query(CustomField).filter_by(
+            lifelist_id=lifelist_id
+        ).order_by(CustomField.display_order).all()
 
         if not custom_fields:
             self.custom_fields_frame.hide()
@@ -336,9 +336,22 @@ class ObservationForm(QWidget):
                         pass
 
                 widget.addItem("")  # Empty option
-                for option in options:
-                    if isinstance(option, dict):
-                        widget.addItem(option.get("label", option.get("value", "")))
+
+                # For choice fields, only load first N options initially
+                if len(options) > 20:
+                    for option in options[:20]:
+                        if isinstance(option, dict):
+                            widget.addItem(option.get("label", ""))
+
+                    widget.addItem("... (load more)")
+                    widget.currentTextChanged.connect(
+                        lambda text, w=widget, f=field: self._handle_choice_selection(text, w, f)
+                    )
+                else:
+                    # Load all options if few
+                    for option in options:
+                        if isinstance(option, dict):
+                            widget.addItem(option.get("label", ""))
             else:
                 # Default to text input for unknown types
                 widget = QLineEdit()
@@ -355,12 +368,41 @@ class ObservationForm(QWidget):
             # Store widget reference
             self.custom_field_widgets[field.id] = widget
 
+    def _handle_choice_selection(self, text, widget, field):
+        """Handle selection of choice field with lazy loading"""
+        if text == "... (load more)":
+            # Remove the placeholder
+            widget.removeItem(widget.findText(text))
+
+            # Load remaining options
+            options = self._get_field_options(field)
+            for option in options[20:]:
+                if isinstance(option, dict):
+                    widget.addItem(option.get("label", ""))
+
+    def _get_field_options(self, field):
+        """Get options for a field"""
+        options = []
+        if field.field_options:
+            try:
+                if isinstance(field.field_options, str):
+                    options_data = json.loads(field.field_options)
+                else:
+                    options_data = field.field_options
+
+                if isinstance(options_data, dict) and "options" in options_data:
+                    options = options_data["options"]
+            except Exception:
+                pass
+        return options
+
     def _load_observation_data(self, session, observation_id):
         """Load data for an existing observation"""
         # Get the observation
-        observation = session.query(
-            self.db_manager.engine.models.Observation
-        ).filter_by(id=observation_id).first()
+        from db.models import Observation
+        observation = session.query(Observation).filter_by(
+            id=observation_id
+        ).first()
 
         if not observation:
             QMessageBox.warning(self, "Error", "Observation not found")
@@ -655,11 +697,13 @@ class ObservationForm(QWidget):
 
         # Save to database
         with self.db_manager.session_scope() as session:
+            from db.models import Observation
+
             if self.current_observation_id:
                 # Update existing observation
-                observation = session.query(
-                    self.db_manager.engine.models.Observation
-                ).filter_by(id=self.current_observation_id).first()
+                observation = session.query(Observation).filter_by(
+                    id=self.current_observation_id
+                ).first()
 
                 if not observation:
                     QMessageBox.warning(self, "Error", "Observation not found")
@@ -675,7 +719,7 @@ class ObservationForm(QWidget):
                 observation.notes = notes
             else:
                 # Create new observation
-                observation = self.db_manager.engine.models.Observation(
+                observation = Observation(
                     lifelist_id=self.current_lifelist_id,
                     entry_name=entry_name,
                     observation_date=observation_date,
@@ -732,18 +776,18 @@ class ObservationForm(QWidget):
 
     def _save_tags(self, session, observation):
         """Save observation tags"""
+        from db.models import Tag
+
         # Clear existing tags
         observation.tags = []
 
         # Add current tags
         for name, category in self.current_tags:
             # Find or create tag
-            tag = session.query(
-                self.db_manager.engine.models.Tag
-            ).filter_by(name=name).first()
+            tag = session.query(Tag).filter_by(name=name).first()
 
             if not tag:
-                tag = self.db_manager.engine.models.Tag(
+                tag = Tag(
                     name=name,
                     category=category
                 )

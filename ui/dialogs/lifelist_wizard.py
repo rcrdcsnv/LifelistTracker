@@ -73,14 +73,23 @@ class LifelistTypeSelectionPage(QWizardPage):
             from db.repositories import LifelistRepository
             lifelist_types = LifelistRepository.get_lifelist_types(session)
 
+            # If no types exist, create default types from config
             if not lifelist_types:
-                # If no types exist, create default types from config
                 self._create_default_types(session)
                 lifelist_types = LifelistRepository.get_lifelist_types(session)
 
-            # Populate combo box
+            # Populate combo box - materialize all data while session is active
+            type_data = []
             for lifelist_type in lifelist_types:
-                self.type_combo.addItem(lifelist_type.name, lifelist_type.id)
+                type_data.append({
+                    'id': lifelist_type.id,
+                    'name': lifelist_type.name,
+                    'description': lifelist_type.description
+                })
+
+            # Now add to combo box with materialized data
+            for data in type_data:
+                self.type_combo.addItem(data['name'], data['id'])
 
         if self.type_combo.count() > 0:
             self._update_type_info(0)
@@ -207,7 +216,7 @@ class LifelistInfoPage(QWizardPage):
         with db_manager.session_scope() as session:
             from db.repositories import LifelistRepository
             if lifelist_type := LifelistRepository.get_lifelist_type(
-                session, type_id
+                    session, type_id
             ):
                 # Get terminology from config
                 config = Config.load()

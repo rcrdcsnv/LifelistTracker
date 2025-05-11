@@ -1,6 +1,6 @@
 # db/repositories.py
-from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, and_, desc, asc
+from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import func, or_, desc
 from typing import List, Optional, Dict, Any, Tuple
 from .models import (Lifelist, LifelistType, LifelistTier, LifelistTypeTier,
                      Observation, Photo, Tag, CustomField, ObservationCustomField,
@@ -87,7 +87,7 @@ class LifelistRepository:
 
         row = query.first()
         if row:
-            return (row.id, row.name, row.classification, row.lifelist_type_id, row.type_name)
+            return row.id, row.name, row.classification, row.lifelist_type_id, row.type_name
         return None
 
     @staticmethod
@@ -188,6 +188,125 @@ class ObservationRepository:
         query = query.order_by(desc(Observation.observation_date))
 
         return query.all()
+
+    @staticmethod
+    def get_observations_batch(session: Session, lifelist_id: int,
+                               offset: int = 0, limit: int = 50,
+                               tier: Optional[str] = None,
+                               search_text: Optional[str] = None,
+                               tag_ids: Optional[List[int]] = None,
+                               sort_by: str = 'date_desc') -> List[Dict]:
+        """Get batch of observations with metadata only (no lazy loading)"""
+        query = session.query(
+            Observation.id,
+            Observation.entry_name,
+            Observation.observation_date,
+            Observation.location,
+            Observation.tier,
+            Observation.lifelist_id
+        ).filter(Observation.lifelist_id == lifelist_id)
+
+        # Apply filters
+        if tier: query = query.filter(Observation.tier == tier)
+        if search_text:
+            search_pattern = f"%{search_text}%"
+            query = query.filter(or_(
+                Observation.entry_name.ilike(search_pattern),
+                Observation.location.ilike(search_pattern),
+                Observation.notes.ilike(search_pattern)
+            ))
+        if tag_ids:
+            for tag_id in tag_ids:
+                query = query.filter(Observation.tags.any(id=tag_id))
+
+        # Apply sorting
+        if sort_by == 'date_desc':
+            query = query.order_by(desc(Observation.observation_date))
+        elif sort_by == 'name_asc':
+            query = query.order_by(Observation.entry_name)
+
+        # Apply offset and limit
+        query = query.offset(offset).limit(limit)
+
+        results = query.all()
+
+        # Convert to plain dictionaries (detached from session)
+        observations = []
+        for row in results:
+            observations.append({
+                'id': row.id,
+                'entry_name': row.entry_name,
+                'date': row.observation_date,
+                'location': row.location,
+                'tier': row.tier,
+                'lifelist_id': row.lifelist_id,
+                'photo_id': None  # Populated separately if needed
+            })
+
+        return observations
+
+    @staticmethod
+    def count_observations(session: Session, lifelist_id: int,
+                           tier: Optional[str] = None,
+                           search_text: Optional[str] = None,
+                           tag_ids: Optional[List[int]] = None) -> int:
+        """Count total observations with filters"""
+        query = session.query(func.count(Observation.id)).filter(Observation.lifelist_id == lifelist_id)
+
+        # Apply same filters as get_observations_batch
+        if tier: query = query.filter(Observation.tier == tier)
+        if search_text:
+            search_pattern = f"%{search_text}%"
+            query = query.filter(or_(
+                Observation.entry_name.ilike(search_pattern),
+                Observation.location.ilike(search_pattern),
+                Observation.notes.ilike(search_pattern)
+            ))
+        if tag_ids:
+            for tag_id in tag_ids:
+                query = query.filter(Observation.tags.any(id=tag_id))
+
+        return query.scalar()
+
+    @staticmethod
+    def get_observation_with_eager_loading(session: Session, observation_id: int) -> Optional[Dict]:
+        """Get single observation with all relationships eagerly loaded"""
+        observation = session.query(Observation).options(
+            selectinload(Observation.photos).load_only(Photo.id, Photo.file_path, Photo.is_primary),
+            selectinload(Observation.custom_fields).options(
+                selectinload(ObservationCustomField.field).load_only(CustomField.field_name)
+            ),
+            selectinload(Observation.tags).load_only(Tag.name, Tag.category),
+            selectinload(Observation.lifelist)
+        ).filter(Observation.id == observation_id).first()
+
+        if not observation:
+            return None
+
+        # Convert to dictionary to detach from session
+        return {
+            'id': observation.id,
+            'entry_name': observation.entry_name,
+            'observation_date': observation.observation_date,
+            'location': observation.location,
+            'latitude': observation.latitude,
+            'longitude': observation.longitude,
+            'tier': observation.tier,
+            'notes': observation.notes,
+            'lifelist_id': observation.lifelist_id,
+            'custom_fields': [
+                {'field_name': cf.field.field_name, 'value': cf.value}
+                for cf in observation.custom_fields
+            ],
+            'tags': [
+                {'name': tag.name, 'category': tag.category}
+                for tag in observation.tags
+            ],
+            'photos': [
+                {'id': photo.id, 'file_path': photo.file_path, 'is_primary': photo.is_primary}
+                for photo in observation.photos
+            ]
+        }
 
     @staticmethod
     def get_observations_with_coordinates(session: Session, lifelist_id: int,
