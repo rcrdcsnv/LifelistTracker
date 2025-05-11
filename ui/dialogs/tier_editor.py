@@ -90,8 +90,9 @@ class TierEditorDialog(QDialog):
         """Update tiers list after drag-and-drop reordering"""
         # Update tiers from list items
         self.tiers = []
-        for i in range(self.tiers_list.count()):
-            self.tiers.append(self.tiers_list.item(i).text())
+        self.tiers.extend(
+            self.tiers_list.item(i).text() for i in range(self.tiers_list.count())
+        )
 
     def _add_tier(self):
         """Add a new tier"""

@@ -1,6 +1,6 @@
 # utils/image.py
 from pathlib import Path
-from typing import Tuple, Optional, Dict, Any, List
+from typing import Tuple, Optional
 from PIL import Image
 import piexif
 import io

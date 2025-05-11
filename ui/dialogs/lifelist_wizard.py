@@ -80,13 +80,14 @@ class LifelistTypeSelectionPage(QWizardPage):
 
             # Populate combo box - materialize all data while session is active
             type_data = []
-            for lifelist_type in lifelist_types:
-                type_data.append({
+            type_data.extend(
+                {
                     'id': lifelist_type.id,
                     'name': lifelist_type.name,
-                    'description': lifelist_type.description
-                })
-
+                    'description': lifelist_type.description,
+                }
+                for lifelist_type in lifelist_types
+            )
             # Now add to combo box with materialized data
             for data in type_data:
                 self.type_combo.addItem(data['name'], data['id'])
@@ -241,9 +242,11 @@ class LifelistInfoPage(QWizardPage):
         db_manager = self.wizard().db_manager
         with db_manager.session_scope() as session:
             from db.models import Lifelist
-            existing = session.query(Lifelist).filter(Lifelist.name == name).first()
-
-            if existing:
+            if (
+                existing := session.query(Lifelist)
+                .filter(Lifelist.name == name)
+                .first()
+            ):
                 self.setSubTitle(f"The name '{name}' is already in use. Please choose another name.")
                 return False
             else:
@@ -313,9 +316,9 @@ class CustomFieldsPage(QWizardPage):
         db_manager = self.wizard().db_manager
         with db_manager.session_scope() as session:
             from db.repositories import LifelistRepository
-            lifelist_type = LifelistRepository.get_lifelist_type(session, type_id)
-
-            if lifelist_type:
+            if lifelist_type := LifelistRepository.get_lifelist_type(
+                session, type_id
+            ):
                 default_fields = config.get_default_fields(lifelist_type.name)
 
                 self.custom_fields.extend(
@@ -575,9 +578,9 @@ class TiersPage(QWizardPage):
         """Handle tiers reordering"""
         # Update tiers list from current order in the list widget
         new_tiers = []
-        for i in range(self.tiers_list.count()):
-            new_tiers.append(self.tiers_list.item(i).text())
-
+        new_tiers.extend(
+            self.tiers_list.item(i).text() for i in range(self.tiers_list.count())
+        )
         self.tiers = new_tiers
 
 
@@ -623,9 +626,9 @@ class SummaryPage(QWizardPage):
         db_manager = self.wizard().db_manager
         with db_manager.session_scope() as session:
             from db.repositories import LifelistRepository
-            lifelist_type = LifelistRepository.get_lifelist_type(session, type_id)
-
-            if lifelist_type:
+            if lifelist_type := LifelistRepository.get_lifelist_type(
+                session, type_id
+            ):
                 self.type_label.setText(f"<b>Type:</b> {lifelist_type.name}")
 
         # Update summary labels

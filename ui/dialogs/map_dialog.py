@@ -1,8 +1,8 @@
 # ui/dialogs/map_dialog.py
-from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton,
                                QComboBox, QDialogButtonBox, QFileDialog,
-                               QMessageBox, QSpinBox)
-from typing import Dict, Any, List
+                               QMessageBox)
+from typing import Dict, Any
 import json
 from .base_map_dialog import BaseMapDialog
 

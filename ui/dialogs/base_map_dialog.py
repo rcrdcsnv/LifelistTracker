@@ -5,7 +5,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 import tempfile
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 
 class BaseMapDialog(QDialog):

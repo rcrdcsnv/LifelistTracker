@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                                QTreeWidget, QTreeWidgetItem, QTabWidget,
                                QGroupBox, QGridLayout, QMessageBox,
                                QProgressBar, QTableWidget,
-                               QTableWidgetItem, QHeaderView)
+                               QTableWidgetItem, QHeaderView, QStyle, QWidget)
 from PySide6.QtCore import Qt
 from pathlib import Path
 import csv
@@ -95,8 +95,7 @@ class FieldMappingDialog(QDialog):
 
         # Save mappings
         for field_key, combo in self.mapping_combos.items():
-            csv_field = combo.currentData()
-            if csv_field:
+            if csv_field := combo.currentData():
                 self.field_mappings[field_key] = csv_field
 
         super().accept()
@@ -704,11 +703,9 @@ class ClassificationManagerDialog(QDialog):
         with self.db_manager.session_scope() as session:
             from db.repositories import ClassificationRepository
 
-            success = ClassificationRepository.set_active_classification(
+            if success := ClassificationRepository.set_active_classification(
                 session, self.lifelist_id, classification_id
-            )
-
-            if success:
+            ):
                 session.commit()
 
                 # Reload classifications

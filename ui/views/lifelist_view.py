@@ -109,11 +109,13 @@ class VirtualObservationModel(QAbstractTableModel):
 
             # Add primary photo IDs
             for obs in observations:
-                photo = session.query(Photo.id).filter(
-                    Photo.observation_id == obs['id'],
-                    Photo.is_primary == True
-                ).first()
-                if photo:
+                if (
+                    photo := session.query(Photo.id)
+                    .filter(
+                        Photo.observation_id == obs['id'], Photo.is_primary == True
+                    )
+                    .first()
+                ):
                     obs['photo_id'] = photo.id
 
             return observations
@@ -445,8 +447,7 @@ class LifelistView(QWidget):
     def _on_observation_double_clicked(self, index):
         """Handle observation double-click"""
         row = index.row()
-        row_data = self.observation_model._get_row_data(row)
-        if row_data:
+        if row_data := self.observation_model._get_row_data(row):
             self.main_window.show_observation(row_data["id"])
 
     def _on_tier_changed(self, tier):

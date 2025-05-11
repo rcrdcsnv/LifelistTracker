@@ -1,7 +1,7 @@
 # db/models.py
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Table, Index, JSON, Text
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 from .base import Base
 
 # Many-to-many relationship between observations and tags
@@ -20,7 +20,7 @@ class LifelistType(Base):
     name = Column(String, unique=True, nullable=False)
     description = Column(String)
     icon = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
     # Relationships
     lifelists = relationship("Lifelist", back_populates="lifelist_type")
@@ -59,7 +59,7 @@ class Lifelist(Base):
     name = Column(String, unique=True, nullable=False)
     lifelist_type_id = Column(Integer, ForeignKey('lifelist_types.id'))
     classification = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
     # Relationships
     lifelist_type = relationship("LifelistType", back_populates="lifelists")
@@ -149,7 +149,7 @@ class Observation(Base):
     longitude = Column(Float)
     tier = Column(String)
     notes = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
     # Relationships
     lifelist = relationship("Lifelist", back_populates="observations")
@@ -243,7 +243,7 @@ class Classification(Base):
     source = Column(String)
     description = Column(Text)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
     # Relationships
     lifelist = relationship("Lifelist", back_populates="classifications")

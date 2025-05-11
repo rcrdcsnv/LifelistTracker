@@ -122,14 +122,12 @@ class ExportDialog(QDialog):
         try:
             # Export lifelist
             with self.db_manager.session_scope() as session:
-                success = self.data_service.export_lifelist(
+                if success := self.data_service.export_lifelist(
                     session,
                     self.lifelist_id,
                     self.export_dir,
-                    self.photos_check.isChecked()
-                )
-
-                if success:
+                    self.photos_check.isChecked(),
+                ):
                     # Construct exported path for display
                     export_path = Path(self.export_dir) / f"{self.lifelist_name}"
 

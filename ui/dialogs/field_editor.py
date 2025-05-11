@@ -205,10 +205,7 @@ class FieldEditorDialog(QDialog):
             options = []
             for row in range(self.options_table.rowCount()):
                 label = self.options_table.item(row, 0).text().strip()
-                value = self.options_table.item(row, 1).text().strip()
-
-                if not value:
-                    value = label.lower().replace(" ", "_")
+                value = self.options_table.item(row, 1).text().strip() or label.lower().replace(" ", "_")
 
                 options.append({
                     "label": label,

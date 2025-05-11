@@ -1,5 +1,5 @@
 # ui/dialogs/coordinate_picker.py
-from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton,
                                QDialogButtonBox, QLineEdit, QMessageBox, QGroupBox)
 from PySide6.QtGui import QDoubleValidator
 from typing import Dict, Any
