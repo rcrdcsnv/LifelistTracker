@@ -18,7 +18,6 @@ class MapDialog(BaseMapDialog):
         # UI Controls
         self.tier_combo = None
         self.entry_combo = None
-        self.zoom_spin = None
         self.apply_btn = None
         self.save_btn = None
 
@@ -53,19 +52,6 @@ class MapDialog(BaseMapDialog):
 
         # Map controls
         controls_layout.addStretch()
-
-        # Zoom controls
-        zoom_layout = QHBoxLayout()
-        zoom_layout.addWidget(QLabel("Zoom:"))
-
-        self.zoom_spin = QSpinBox()
-        self.zoom_spin.setMinimum(1)
-        self.zoom_spin.setMaximum(18)
-        self.zoom_spin.setValue(5)
-        self.zoom_spin.valueChanged.connect(self._update_map_zoom)
-        zoom_layout.addWidget(self.zoom_spin)
-
-        controls_layout.addLayout(zoom_layout)
 
         # Apply button
         self.apply_btn = QPushButton("Apply Filters")
@@ -174,39 +160,40 @@ class MapDialog(BaseMapDialog):
                 markers.append(marker)
 
         markers_json = json.dumps(markers)
-        # Get user's selected zoom if available, otherwise use calculated zoom
-        use_fit_bounds = len(markers) > 1  # Only use fitBounds for multiple markers
 
         return f"""
-        
         // Add markers
         const markers = {markers_json};
-        const useFitBounds = {json.dumps(use_fit_bounds)};
-        console.log('Markers to process: ' + markers.length);
 
         if (markers.length > 0) {{
-            const markerLayer = L.layerGroup();
-            
+            let bounds = L.latLngBounds();
+
             markers.forEach(function(marker, index) {{
                 if (marker.lat !== undefined && marker.lon !== undefined) {{
-                    const m = L.marker([marker.lat, marker.lon])
-                        .addTo(markerLayer)
+                    const latLng = L.latLng(marker.lat, marker.lon);
+                    const m = L.marker(latLng)
+                        .addTo(map)
                         .bindPopup(marker.popup);
-                    console.log('Added marker ' + index + ' at [' + marker.lat + ',' + marker.lon + ']');
+
+                    // Add point to bounds
+                    bounds.extend(latLng);
                 }}
             }});
-            
-            markerLayer.addTo(map);
 
-            // Use fitBounds only for multiple markers, otherwise the map config zoom is used
-            if (useFitBounds) {{
-                // Add some padding around the markers
-                map.fitBounds(markerLayer.getBounds().pad(0.1));
-                console.log('Fitted bounds to markers');
+            // Fit to bounds only if we have valid bounds
+            if (bounds.isValid()) {{
+                if (markers.length === 1) {{
+                    // For single marker, just center on it
+                    map.setView(bounds.getCenter(), 13);
+                }} else {{
+                    // For multiple markers, fit all in view with padding
+                    map.fitBounds(bounds, {{
+                        padding: [20, 20],  // Padding in pixels
+                        maxZoom: 15         // Don't zoom in too far
+                    }});
+                }}
             }}
         }}
-
-        console.log('Map initialization complete!');
         """
 
     def _load_tiers(self):
@@ -279,11 +266,6 @@ class MapDialog(BaseMapDialog):
 
             # Create/recreate the map with current observations
             self.create_map()
-
-    def _update_map_zoom(self):
-        """Update map zoom level"""
-        # Reload map with current filters but new zoom
-        self._load_observations()
 
     def _save_map(self):
         """Save map as HTML file"""
