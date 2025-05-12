@@ -101,7 +101,7 @@ class LifelistRepository:
 
     @staticmethod
     def get_lifelist_tiers(session: Session, lifelist_id: int) -> List[str]:
-        """Get tiers for a lifelist"""
+        """Get tiers for a lifelist without including special tiers like 'Undetermined'"""
         tiers = session.query(LifelistTier).filter(
             LifelistTier.lifelist_id == lifelist_id
         ).order_by(LifelistTier.tier_order).all()
@@ -207,7 +207,19 @@ class ObservationRepository:
         ).filter(Observation.lifelist_id == lifelist_id)
 
         # Apply filters
-        if tier: query = query.filter(Observation.tier == tier)
+        if tier:
+            if tier == "Undetermined":
+                # Special case for undetermined tier - match observations with tier not in the list of valid tiers
+                valid_tiers = LifelistRepository.get_lifelist_tiers(session, lifelist_id)
+                query = query.filter(
+                    or_(
+                        ~Observation.tier.in_(valid_tiers),  # Not in valid tiers
+                        Observation.tier == "Undetermined"  # Explicitly marked as Undetermined
+                    )
+                )
+            else:
+                query = query.filter(Observation.tier == tier)
+
         if search_text:
             search_pattern = f"%{search_text}%"
             query = query.filter(or_(

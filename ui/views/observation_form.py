@@ -4,11 +4,11 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QLineEdit, QDateEdit, QComboBox, QTextEdit,
                                QFileDialog, QMessageBox, QCheckBox)
 from PySide6.QtCore import Qt, QDate, Signal
-from PySide6.QtGui import QPixmap, QDoubleValidator, QFocusEvent
+from PySide6.QtGui import QPixmap, QDoubleValidator, QTransform
 from pathlib import Path
 import json
 from datetime import datetime
-
+from PIL import Image
 
 # Add the ClickableCoordinateEdit class
 class ClickableCoordinateEdit(QLineEdit):
@@ -310,7 +310,7 @@ class ObservationForm(QWidget):
         from PySide6.QtWidgets import QInputDialog
 
         photo_choices = []
-        for i, (idx, photo) in enumerate(photos_with_coords):
+        for idx, photo in photos_with_coords:
             photo_name = Path(photo["path"]).name
             coords = f"({photo['latitude']:.6f}, {photo['longitude']:.6f})"
             primary = " (Primary)" if photo.get("is_primary", False) else ""
@@ -402,7 +402,7 @@ class ObservationForm(QWidget):
         all_tags = session.query(Tag).all()
 
         # Extract unique categories
-        categories = list(set(tag.category for tag in all_tags if tag.category))
+        categories = list({tag.category for tag in all_tags if tag.category})
 
         # Update combobox
         self.tag_category_combo.clear()
@@ -749,7 +749,7 @@ class ObservationForm(QWidget):
                 break  # Only ask for the first photo with coordinates
 
     def _update_photos_display(self):
-        """Update the photos display"""
+        """Update the photos display with rotation controls"""
         # Clear existing photos and references
         while self.photos_container_layout.count():
             item = self.photos_container_layout.takeAt(0)
@@ -761,7 +761,15 @@ class ObservationForm(QWidget):
         for i, photo in enumerate(self.photos):
             # Create thumbnail
             try:
+                # Load the image
                 pixmap = QPixmap(photo["path"])
+
+                # Apply rotation if specified
+                rotation = photo.get("rotation", 0)
+                if rotation != 0:
+                    transform = QTransform().rotate(rotation)
+                    pixmap = pixmap.transformed(transform)
+
                 pixmap = pixmap.scaled(100, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 self.images.append(pixmap)
 
@@ -783,6 +791,27 @@ class ObservationForm(QWidget):
                 )
                 photo_layout.addWidget(primary_check)
 
+                # Rotation controls
+                rotation_layout = QHBoxLayout()
+
+                rotate_left_btn = QPushButton("↶")  # Counter-clockwise
+                rotate_left_btn.setToolTip("Rotate counter-clockwise")
+                rotate_left_btn.setMaximumWidth(30)
+                rotate_left_btn.clicked.connect(
+                    lambda checked=False, idx=i: self._rotate_photo(idx, -90)
+                )
+
+                rotate_right_btn = QPushButton("↷")  # Clockwise
+                rotate_right_btn.setToolTip("Rotate clockwise")
+                rotate_right_btn.setMaximumWidth(30)
+                rotate_right_btn.clicked.connect(
+                    lambda checked=False, idx=i: self._rotate_photo(idx, 90)
+                )
+
+                rotation_layout.addWidget(rotate_left_btn)
+                rotation_layout.addWidget(rotate_right_btn)
+                photo_layout.addLayout(rotation_layout)
+
                 # Show if photo has GPS coordinates
                 if photo.get("latitude") is not None and photo.get("longitude") is not None:
                     gps_label = QLabel("GPS: ✓")
@@ -800,7 +829,7 @@ class ObservationForm(QWidget):
             except Exception as e:
                 print(f"Error creating thumbnail: {e}")
 
-                # Enable/disable "Use Photo Coordinates" button based on available photos with GPS
+            # Enable/disable "Use Photo Coordinates" button based on available photos with GPS
             photos_with_coords = [p for p in self.photos
                                   if p.get("latitude") is not None and p.get("longitude") is not None]
             self.use_photo_coords_btn.setEnabled(len(photos_with_coords) > 0)
@@ -981,19 +1010,35 @@ class ObservationForm(QWidget):
             # Add to observation
             observation.tags.append(tag)
 
+    def _rotate_photo(self, index, angle):
+        """Rotate a photo by the given angle in degrees"""
+        if 0 <= index < len(self.photos):
+            # Update rotation value (accumulate rotations)
+            current_rotation = self.photos[index].get("rotation", 0)
+            new_rotation = (current_rotation + angle) % 360
+            self.photos[index]["rotation"] = new_rotation
+
+            # Update display
+            self._update_photos_display()
+
     def _save_photos(self, session, observation):
         """Save observation photos"""
         from db.repositories import PhotoRepository
+        from db.models import Photo
 
         # Handle existing photos in the database
         if self.current_observation_id:
             # Get existing photos
             existing_photos = PhotoRepository.get_observation_photos(session, observation.id)
+            existing_ids = {photo.id for photo in existing_photos}
             existing_paths = {photo.file_path for photo in existing_photos}
 
             # Find photos to delete (in database but not in self.photos)
+            current_ids = {photo.get("id") for photo in self.photos if photo.get("id")}
             current_paths = {photo["path"] for photo in self.photos if "path" in photo}
-            photos_to_delete = [photo for photo in existing_photos if photo.file_path not in current_paths]
+
+            photos_to_delete = [photo for photo in existing_photos
+                                if photo.id not in current_ids and photo.file_path not in current_paths]
 
             # Delete removed photos
             for photo in photos_to_delete:
@@ -1002,20 +1047,86 @@ class ObservationForm(QWidget):
         # Add/update photos
         for photo_data in self.photos:
             path = photo_data.get("path")
+            photo_id = photo_data.get("id")
+            rotation = photo_data.get("rotation", 0)
+
             if not path:
                 continue
 
-            # Check if this is a new photo or an existing one
-            if self.current_observation_id and any(p.file_path == path for p in existing_photos):
+            # Check if this is an existing photo with an ID
+            if photo_id and self.current_observation_id:
                 # Existing photo - update primary flag if needed
+                photo = session.query(Photo).filter_by(id=photo_id).first()
+                if photo:
+                    if photo.is_primary != photo_data.get("is_primary", False):
+                        PhotoRepository.set_primary_photo(session, photo.id)
+
+                    # Apply rotation if needed
+                    if rotation != 0:
+                        self._apply_rotation_to_stored_photo(photo, rotation, session)
+
+            # Check if this is an existing photo by path
+            elif self.current_observation_id and any(p.file_path == path for p in existing_photos):
+                # Existing photo by path - update primary flag if needed
                 photo = next(p for p in existing_photos if p.file_path == path)
                 if photo.is_primary != photo_data.get("is_primary", False):
                     PhotoRepository.set_primary_photo(session, photo.id)
+
+                # Apply rotation if needed
+                if rotation != 0:
+                    self._apply_rotation_to_stored_photo(photo, rotation, session)
             else:
                 # New photo - store it
+                if rotation != 0:
+                    # Rotate the image before storing
+                    rotated_path = self._create_rotated_copy(path, rotation)
+                    if rotated_path:
+                        path = rotated_path
+
                 self.photo_manager.store_photo(
                     session,
                     observation.id,
                     path,
                     is_primary=photo_data.get("is_primary", False)
                 )
+
+    def _apply_rotation_to_stored_photo(self, photo, rotation, session):
+        """Apply rotation to an already stored photo"""
+        try:
+            # Get the file path
+            file_path = photo.file_path
+
+            # Create a rotated version
+            rotated_path = self._create_rotated_copy(file_path, rotation)
+
+            if rotated_path:
+                # Replace the original with the rotated version
+                import shutil
+                shutil.copy2(rotated_path, file_path)
+
+                # Update thumbnails
+                self.photo_manager.regenerate_thumbnails(photo, session)
+        except Exception as e:
+            print(f"Error rotating stored photo: {e}")
+
+    def _create_rotated_copy(self, path, rotation):
+        """Create a rotated copy of the image and return its path"""
+        try:
+            # Create a temporary file name
+            import tempfile
+            from pathlib import Path
+
+            original_path = Path(path)
+            temp_dir = Path(tempfile.gettempdir())
+            temp_file = temp_dir / f"rotated_{original_path.name}"
+
+            # Open and rotate the image
+            with Image.open(path) as img:
+                # PIL rotation is counter-clockwise, so we negate the angle
+                rotated_img = img.rotate(-rotation, expand=True)
+                rotated_img.save(temp_file)
+
+            return str(temp_file)
+        except Exception as e:
+            print(f"Error creating rotated copy: {e}")
+            return None

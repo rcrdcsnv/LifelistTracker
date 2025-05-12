@@ -58,7 +58,7 @@ class PhotoManager:
     def store_photo(self, session: Session, observation_id: int, file_path: Union[str, Path],
                     is_primary: bool = False) -> Optional[Photo]:
         """
-        Store a photo for an observation
+        Store a photo for an observation without creating duplicates
 
         Args:
             session: Database session
@@ -78,8 +78,20 @@ class PhotoManager:
             if not observation:
                 return None
 
-            # Extract EXIF data
+            # Check if this file is already stored for this observation
             file_path = Path(file_path)
+            existing_photos = session.query(Photo).filter(
+                Photo.observation_id == observation_id
+            ).all()
+
+            for existing_photo in existing_photos:
+                if Path(existing_photo.file_path).name == file_path.name:
+                    # Update primary status if needed
+                    if is_primary != existing_photo.is_primary:
+                        existing_photo.is_primary = is_primary
+                    return existing_photo
+
+            # Extract EXIF data
             lat, lon, taken_date = extract_exif_data(file_path)
 
             # Create Photo record
@@ -161,8 +173,7 @@ class PhotoManager:
         cache_key = f"{lifelist_id}_{observation_id}_{photo_id}_{size}"
 
         # Check cache first
-        cached_image = self.image_cache.get(cache_key)
-        if cached_image:
+        if cached_image := self.image_cache.get(cache_key):
             return cached_image
 
         # Load from disk
@@ -226,4 +237,66 @@ class PhotoManager:
             return True
         except Exception as e:
             print(f"Error deleting photo: {e}")
+            return False
+
+    def regenerate_thumbnails(self, photo, session=None):
+        """Regenerate thumbnails for a photo after rotation or other changes"""
+        try:
+            # Extract photo information
+            photo_id = photo.id
+            observation_id = photo.observation_id
+
+            # Get the observation to determine lifelist_id
+            from db.models import Observation
+
+            if session:
+                # Use provided session
+                observation = session.query(Observation).filter(
+                    Observation.id == observation_id
+                ).first()
+            else:
+                # Create a new session if none provided (less ideal)
+                from db.base import DatabaseManager
+                temp_session = DatabaseManager.get_instance().Session()
+                try:
+                    observation = temp_session.query(Observation).filter(
+                        Observation.id == observation_id
+                    ).first()
+                finally:
+                    temp_session.close()
+
+            if not observation:
+                return False
+
+            lifelist_id = observation.lifelist_id
+
+            # Get file path
+            file_path = photo.file_path
+            if not Path(file_path).exists():
+                return False
+
+            # Generate new thumbnails
+            with Image.open(file_path) as img:
+                for size_name, dimensions in self.thumbnail_sizes.items():
+                    thumb_path = self.get_thumbnail_path(
+                        lifelist_id, observation_id, photo_id, size_name
+                    )
+                    img_copy = img.copy()
+                    img_copy.thumbnail(dimensions)
+                    img_copy.save(thumb_path, "JPEG", quality=85)
+
+                # Update image dimensions in database
+                photo.width = img.width
+                photo.height = img.height
+
+            # Clear from cache
+            for size in self.thumbnail_sizes:
+                cache_key = f"{lifelist_id}_{observation_id}_{photo_id}_{size}"
+                if cache_key in self.image_cache:
+                    self.image_cache.cache.pop(cache_key, None)
+
+            return True
+
+        except Exception as e:
+            print(f"Error regenerating thumbnails: {e}")
             return False

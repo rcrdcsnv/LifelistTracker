@@ -1,9 +1,24 @@
 # ui/views/observation_view.py
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QPushButton, QFrame, QScrollArea, QGridLayout, QMessageBox)
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QPixmap, QCursor
 from PIL.ImageQt import ImageQt
+
+
+# Custom clickable label for thumbnails
+class ClickablePhotoLabel(QLabel):
+    """A custom QLabel that emits a signal when clicked."""
+    clicked = Signal(int)  # Signal to emit photo ID when clicked
+
+    def __init__(self, photo_id, parent=None):
+        super().__init__(parent)
+        self.photo_id = photo_id
+        self.setCursor(QCursor(Qt.PointingHandCursor))  # Change cursor to hand when hovering
+
+    def mousePressEvent(self, event):
+        self.clicked.emit(self.photo_id)
+        super().mousePressEvent(event)
 
 
 class ObservationView(QWidget):
@@ -27,6 +42,11 @@ class ObservationView(QWidget):
         self.photos_loaded = False
         self.custom_fields_loaded = False
         self.tags_loaded = False
+
+        # Photo gallery tracking
+        self.thumbnail_labels = []  # References to QLabel objects
+        self.photo_hints = []  # References to hint labels
+        self.displayed_photo_id = None  # ID of currently displayed photo
 
         self._setup_ui()
 
@@ -118,11 +138,11 @@ class ObservationView(QWidget):
         self.content_layout.addStretch()
 
     def load_observation(self, observation_id):
-        """Load observation with progressive loading strategy"""
+        """Load observation with all data immediately"""
         self.current_observation_id = observation_id
-        self.photos_loaded = False
-        self.custom_fields_loaded = False
-        self.tags_loaded = False
+
+        # Clear old UI state
+        self._clear_all_display()
 
         # Close previous session if exists
         if self.view_session:
@@ -148,7 +168,7 @@ class ObservationView(QWidget):
             from db.repositories import LifelistRepository
             with self.main_window.db_manager.session_scope() as session:
                 if lifelist := LifelistRepository.get_lifelist(
-                    session, lifelist_id
+                        session, lifelist_id
                 ):
                     lifelist_type = lifelist[4] if lifelist else ""
 
@@ -167,16 +187,68 @@ class ObservationView(QWidget):
             # Load photos if present
             if self.current_observation_data['photos']:
                 self._load_photos_section()
-                self.photos_loaded = True
+            else:
+                # Explicitly hide the photo frame for entries without photos
+                self.photo_frame.hide()
+                # Clear any thumbnails from previous views
+                self._clear_photos()
 
-            # Create placeholders for other sections
-            self._create_section_placeholders()
+            # Load custom fields immediately
+            self._display_custom_fields(self.current_observation_data['custom_fields'])
+
+            # Load tags immediately
+            self._display_tags(self.current_observation_data['tags'])
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load observation: {str(e)}")
             if self.view_session:
                 self.view_session.close()
                 self.view_session = None
+
+    def _clear_all_display(self):
+        """Clear all display elements to prevent showing stale data"""
+        # Clear photos
+        self._clear_photos()
+
+        # Clear primary photo
+        self.primary_photo_label.clear()
+
+        # Clear details grid
+        while self.details_layout.count():
+            item = self.details_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Clear custom fields
+        while self.custom_fields_layout.count() > 1:  # Keep the title
+            item = self.custom_fields_layout.takeAt(1)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Clear tags
+        while self.tags_container_layout.count():
+            item = self.tags_container_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _clear_photos(self):
+        """Clear all photo thumbnails and references"""
+        # Clear thumbnail images
+        while self.thumbnails_layout.count():
+            item = self.thumbnails_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Clear hint labels
+        for hint in self.photo_hints:
+            if hint.parent():
+                hint.setParent(None)
+
+        # Clear lists
+        self.images = []
+        self.thumbnail_labels = []
+        self.photo_hints = []
+        self.displayed_photo_id = None
 
     def _display_basic_info(self, entry_term, observation_term):
         """Display basic observation info from cached data"""
@@ -220,20 +292,6 @@ class ObservationView(QWidget):
 
             row += 1
 
-    def _create_section_placeholders(self):
-        """Create UI placeholders for sections that can be loaded on demand"""
-        # Custom fields placeholder
-        if self.current_observation_data['custom_fields'] and not self.custom_fields_loaded:
-            placeholder = QPushButton("Load Custom Fields")
-            placeholder.clicked.connect(lambda: self._load_section('custom_fields'))
-            self.custom_fields_layout.addWidget(placeholder)
-
-        # Tags placeholder  
-        if self.current_observation_data['tags'] and not self.tags_loaded:
-            placeholder = QPushButton("Load Tags")
-            placeholder.clicked.connect(lambda: self._load_section('tags'))
-            self.tags_layout.addWidget(placeholder)
-
     def _load_section(self, section_name):
         """Load a specific section on demand"""
         data = self.current_observation_data
@@ -247,7 +305,10 @@ class ObservationView(QWidget):
             self.tags_loaded = True
 
     def _load_photos_section(self):
-        """Load and display photos for the observation"""
+        """Load and display photos for the observation with interactive gallery"""
+        # First clear any existing photos
+        self._clear_photos()
+
         data = self.current_observation_data
         photos = data['photos']
 
@@ -259,23 +320,10 @@ class ObservationView(QWidget):
 
         # Find primary photo, or use first one
         primary_photo = next((p for p in photos if p['is_primary']), photos[0] if photos else None)
+        self.displayed_photo_id = primary_photo['id'] if primary_photo else None
 
         if primary_photo:
-            lifelist_id = data['lifelist_id']
-            observation_id = data['id']
-
-            # Load large primary photo
-            primary_image = self.photo_manager.get_photo_thumbnail(
-                lifelist_id, observation_id, primary_photo['id'], "lg"
-            )
-
-            if primary_image:
-                # Convert PIL image to QPixmap
-                q_image = ImageQt(primary_image)
-                pixmap = QPixmap.fromImage(q_image)
-
-                self.primary_photo_label.setPixmap(pixmap)
-                self.images.append(pixmap)  # Keep reference
+            self._load_large_photo(primary_photo['id'])
 
         # Add thumbnails if there are multiple photos
         if len(photos) > 1:
@@ -283,8 +331,11 @@ class ObservationView(QWidget):
                 if thumb_image := self.photo_manager.get_photo_thumbnail(
                         data['lifelist_id'], data['id'], photo['id'], "sm"
                 ):
-                    # Create thumbnail label
-                    thumb_label = QLabel()
+                    # Create clickable thumbnail label
+                    thumb_label = ClickablePhotoLabel(photo['id'])
+
+                    # Connect click signal
+                    thumb_label.clicked.connect(self._on_thumbnail_clicked)
 
                     # Convert PIL image to QPixmap
                     q_image = ImageQt(thumb_image)
@@ -294,14 +345,81 @@ class ObservationView(QWidget):
                     self.thumbnails_layout.addWidget(thumb_label)
 
                     # Highlight if primary
-                    if photo['is_primary']:
-                        thumb_label.setStyleSheet("border: 2px solid #3498db;")
+                    style = "border: 2px solid #3498db;" if photo['is_primary'] else ""
+                    # Add hover effect
+                    style += "padding: 2px; margin: 2px;"
+                    style += "border-radius: 4px;"
+                    thumb_label.setStyleSheet(style)
 
                     self.images.append(pixmap)  # Keep reference
+                    self.thumbnail_labels.append(thumb_label)  # Keep reference
+
+    # Add a method to load a large photo by ID
+    def _load_large_photo(self, photo_id):
+        """Load and display a large version of the specified photo"""
+        data = self.current_observation_data
+        photo = next((p for p in data['photos'] if p['id'] == photo_id), None)
+
+        if not photo:
+            return
+
+        lifelist_id = data['lifelist_id']
+        observation_id = data['id']
+
+        # Load large photo
+        large_image = self.photo_manager.get_photo_thumbnail(
+            lifelist_id, observation_id, photo_id, "lg"
+        )
+
+        if large_image:
+            # Convert PIL image to QPixmap
+            q_image = ImageQt(large_image)
+            pixmap = QPixmap.fromImage(q_image)
+
+            self.primary_photo_label.setPixmap(pixmap)
+
+            # Track which image is displayed
+            self.displayed_photo_id = photo_id
+
+            # Update thumbnail highlighting for visual feedback
+            self._update_thumbnail_highlighting()
+
+    # Add a method to handle thumbnail clicks
+    def _on_thumbnail_clicked(self, photo_id):
+        """Handle thumbnail click by displaying that photo in the large view"""
+        if photo_id == self.displayed_photo_id:
+            return  # Already displaying this photo
+
+        self._load_large_photo(photo_id)
+
+    # Add a method to update thumbnail highlighting
+    def _update_thumbnail_highlighting(self):
+        """Update the visual highlighting of thumbnails"""
+        data = self.current_observation_data
+
+        for thumb_label in self.thumbnail_labels:
+            photo = next((p for p in data['photos'] if p['id'] == thumb_label.photo_id), None)
+
+            # Highlight if primary or currently displayed
+            is_primary = photo and photo.get('is_primary', False)
+            is_displayed = thumb_label.photo_id == self.displayed_photo_id
+
+            style = ""
+            if is_primary:
+                style += "border: 2px solid #3498db;"  # Blue border for primary
+            if is_displayed:
+                style += "border: 2px solid #e74c3c;"  # Red border for displayed
+                style += "background-color: rgba(231, 76, 60, 0.1);"  # Light red background
+
+            # Add hover effect
+            style += "padding: 2px; margin: 2px;"
+            style += "border-radius: 4px;"
+
+            thumb_label.setStyleSheet(style)
 
     def _display_custom_fields(self, custom_fields):
         """Display custom fields for the observation"""
-        # Clear the placeholder button
+        # Clear any existing content
         while self.custom_fields_layout.count() > 1:  # Keep the header
             item = self.custom_fields_layout.takeAt(1)
             if item.widget():

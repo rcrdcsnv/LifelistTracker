@@ -154,7 +154,7 @@ class TierEditorDialog(QDialog):
         message_box.setIcon(QMessageBox.Warning)
         message_box.setText(f"Are you sure you want to delete the tier '{current_tier}'?")
         message_box.setInformativeText(
-            f"Any {self.observation_term}s using this tier will need to be reassigned."
+            f"Any {self.observation_term}s using this tier will be marked as 'Undetermined'."
         )
         message_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         message_box.setDefaultButton(QMessageBox.No)
@@ -180,11 +180,10 @@ class TierEditorDialog(QDialog):
         if message_box.exec() == QMessageBox.Yes:
             with self.db_manager.session_scope() as session:
                 from db.repositories import LifelistRepository
+                from db.models import Lifelist
 
                 # Get lifelist to determine type
-                lifelist = session.query(
-                    self.db_manager.engine.models.Lifelist
-                ).filter_by(id=self.lifelist_id).first()
+                lifelist = session.query(Lifelist).filter_by(id=self.lifelist_id).first()
 
                 if lifelist and lifelist.lifelist_type_id:
                     # Get default tiers for this type
@@ -235,21 +234,19 @@ class TierEditorDialog(QDialog):
     def _check_orphaned_observations(self, session):
         """Check if any observations use tiers that have been removed"""
         # Get all observations for this lifelist
-        observations = session.query(
-            self.db_manager.engine.models.Observation
-        ).filter_by(lifelist_id=self.lifelist_id).all()
+        from db.models import Observation
+        observations = session.query(Observation).filter_by(lifelist_id=self.lifelist_id).all()
 
         # Check for observations with tiers not in the new tiers list
         orphaned_count = 0
-        default_tier = self.tiers[0] if self.tiers else None
+        undetermined_tier = "Undetermined"  # Special tier for orphaned observations
 
         for observation in observations:
             if observation.tier and observation.tier not in self.tiers:
                 orphaned_count += 1
 
-                # Assign to default tier if available
-                if default_tier:
-                    observation.tier = default_tier
+                # Assign to "Undetermined" tier
+                observation.tier = undetermined_tier
 
         # Show message if orphaned observations were found
         if orphaned_count > 0:
@@ -258,11 +255,7 @@ class TierEditorDialog(QDialog):
 
             message = (
                 f"{orphaned_count} {obs_text} used {tier_text} that have been removed. "
+                f"These have been marked as '{undetermined_tier}'."
             )
-
-            if default_tier:
-                message += f"These have been reassigned to the '{default_tier}' tier."
-            else:
-                message += "These have been left without a tier."
 
             QMessageBox.information(self, "Orphaned Observations", message)

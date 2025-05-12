@@ -410,9 +410,13 @@ class LifelistView(QWidget):
         self.observation_model.set_lifelist(lifelist_id)
 
     def _load_tiers(self, session, lifelist_id):
-        """Load tiers for the tier filter dropdown"""
+        """Load tiers for the tier filter dropdown, including special undetermined tier"""
         from db.repositories import LifelistRepository
         tiers = ["All"] + LifelistRepository.get_lifelist_tiers(session, lifelist_id)
+
+        # Add "Undetermined" tier at the end if it's not already in the list
+        if "Undetermined" not in tiers:
+            tiers.append("Undetermined")
 
         # Update combobox
         self.tier_combo.clear()
