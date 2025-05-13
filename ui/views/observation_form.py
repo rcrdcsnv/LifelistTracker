@@ -37,7 +37,6 @@ class ObservationForm(QWidget):
         self.main_window = main_window
         self.db_manager = main_window.db_manager
         self.photo_manager = photo_manager
-        self.session_manager = main_window.session_manager
 
         # State variables
         self.current_lifelist_id = None
@@ -68,9 +67,6 @@ class ObservationForm(QWidget):
         self.earth_coords_container = None
         self.sky_coords_container = None
         self.equipment_container = None
-
-        # Current tags
-        self.current_tags = []  # List of (name, category) tuples
 
         self._setup_ui()
 
@@ -289,8 +285,7 @@ class ObservationForm(QWidget):
             # Also update the custom fields if they exist
             for field_id, widget in self.custom_field_widgets.items():
                 field_name = None
-
-                # Get field name using repository to avoid detached instance issues
+                # Get field name
                 with self.db_manager.session_scope() as session:
                     from db.models import CustomField
                     field = session.query(CustomField).filter_by(id=field_id).first()
@@ -321,19 +316,22 @@ class ObservationForm(QWidget):
         if dialog.exec():
             self.selected_equipment_ids = dialog.get_selected_equipment()
 
-            # Update display using a fresh session
-            with self.db_manager.session_scope() as session:
-                from db.repositories import EquipmentRepository
-                equipment_list = []
+            # Update display
+            if self.selected_equipment_ids:
+                with self.db_manager.session_scope() as session:
+                    from db.repositories import EquipmentRepository
+                    equipment_list = []
 
-                for eq_id in self.selected_equipment_ids:
-                    if equipment := EquipmentRepository.get_equipment(session, eq_id):
-                        equipment_list.append(equipment.name)
+                    for eq_id in self.selected_equipment_ids:
+                        if equipment := EquipmentRepository.get_equipment(session, eq_id):
+                            equipment_list.append(equipment.name)
 
-                if equipment_list:
-                    self.equipment_display.setText(", ".join(equipment_list))
-                else:
-                    self.equipment_display.setText("No equipment selected")
+                    if equipment_list:
+                        self.equipment_display.setText(", ".join(equipment_list))
+                    else:
+                        self.equipment_display.setText("No equipment selected")
+            else:
+                self.equipment_display.setText("No equipment selected")
 
     def _create_custom_fields_section(self):
         """Create the custom fields section"""
@@ -383,6 +381,9 @@ class ObservationForm(QWidget):
 
         self.form_layout.addWidget(self.tags_frame)
 
+        # Current tags
+        self.current_tags = []  # List of (name, category) tuples
+
     def _create_photos_section(self):
         """Create the photos section"""
         self.photos_frame = QFrame()
@@ -421,7 +422,6 @@ class ObservationForm(QWidget):
         if not self.current_lifelist_id:
             return False
 
-        # Use a repository method with fresh session to avoid detached issues
         with self.db_manager.session_scope() as session:
             from db.repositories import LifelistRepository
             lifelist = LifelistRepository.get_lifelist(session, self.current_lifelist_id)
@@ -487,7 +487,7 @@ class ObservationForm(QWidget):
         self.current_tags = []
         self.selected_equipment_ids = []
 
-        # Get lifelist info to determine terminology using a fresh session
+        # Get lifelist info to determine terminology
         with self.db_manager.session_scope() as session:
             from db.repositories import LifelistRepository
             lifelist = LifelistRepository.get_lifelist(session, lifelist_id)
@@ -537,173 +537,10 @@ class ObservationForm(QWidget):
 
             # If editing an existing observation, load its data
             if observation_id:
-                # Use a repository method to get all observation data at once
-                from db.repositories import ObservationRepository
-
-                # Define a custom repository method for UI display
-                observation_data = self._get_observation_data_for_display(session, observation_id)
-
-                if observation_data:
-                    self._populate_form_from_data(observation_data, is_astronomy)
-
+                self._load_observation_data(session, observation_id)
             elif entry_name:
                 # Pre-fill entry name
                 self.entry_name_edit.setText(entry_name)
-
-    def _get_observation_data_for_display(self, session, observation_id):
-        """Get observation data ready for display, avoiding detached instance issues"""
-        from db.models import Observation, ObservationCustomField
-        from sqlalchemy.orm import joinedload
-
-        # Load observation with all needed relationships eagerly loaded
-        observation = session.query(Observation).filter_by(
-            id=observation_id
-        ).options(
-            joinedload(Observation.custom_fields).joinedload(ObservationCustomField.field),
-            joinedload(Observation.tags),
-            joinedload(Observation.photos)
-        ).first()
-
-        if not observation:
-            return None
-
-        # Extract all data while session is active
-        result = {
-            'id': observation.id,
-            'entry_name': observation.entry_name,
-            'observation_date': observation.observation_date,
-            'location': observation.location,
-            'latitude': observation.latitude,
-            'longitude': observation.longitude,
-            'tier': observation.tier,
-            'notes': observation.notes,
-            'lifelist_id': observation.lifelist_id,
-
-            # Extract relationships data too
-            'custom_fields': [
-                {
-                    'field_id': cf.field_id,
-                    'field_name': cf.field.field_name,
-                    'value': cf.value
-                }
-                for cf in observation.custom_fields
-            ],
-
-            'tags': [
-                {
-                    'id': tag.id,
-                    'name': tag.name,
-                    'category': tag.category
-                }
-                for tag in observation.tags
-            ],
-
-            'photos': [
-                {
-                    'id': photo.id,
-                    'path': photo.file_path,
-                    'is_primary': photo.is_primary
-                }
-                for photo in observation.photos
-            ]
-        }
-
-        # For astronomy lifelists, also load equipment
-        if self.check_if_astronomy_lifelist():
-            from db.repositories import EquipmentRepository
-            equipment = EquipmentRepository.get_observation_equipment(session, observation_id)
-            result['equipment'] = [
-                {
-                    'id': eq.id,
-                    'name': eq.name,
-                    'type': eq.type
-                }
-                for eq in equipment
-            ]
-
-        return result
-
-    def _populate_form_from_data(self, data, is_astronomy):
-        """Populate form fields from extracted observation data"""
-        # Basic fields
-        self.entry_name_edit.setText(data['entry_name'])
-
-        if data['observation_date']:
-            date = QDateTime.fromString(
-                data['observation_date'].strftime("%Y-%m-%d %H:%M:%S"),
-                "yyyy-MM-dd hh:mm:ss"
-            )
-            self.date_edit.setDateTime(date)
-
-        if data['location']:
-            self.location_edit.setText(data['location'])
-
-        # Handle different coordinate types based on lifelist type
-        if is_astronomy:
-            # For astronomy, get RA/Dec from custom fields
-            for field in data['custom_fields']:
-                if field['field_name'] == "Right Ascension":
-                    self.ra_edit.setText(field['value'] or "")
-                elif field['field_name'] == "Declination":
-                    self.dec_edit.setText(field['value'] or "")
-        else:
-            # For regular lifelists, use lat/lon
-            if data['latitude'] is not None:
-                self.latitude_edit.setText(str(data['latitude']))
-
-            if data['longitude'] is not None:
-                self.longitude_edit.setText(str(data['longitude']))
-
-        # Tier
-        if data['tier']:
-            index = self.tier_combo.findText(data['tier'])
-            if index >= 0:
-                self.tier_combo.setCurrentIndex(index)
-
-        # Notes
-        if data['notes']:
-            self.notes_edit.setText(data['notes'])
-
-        # Custom fields
-        for field in data['custom_fields']:
-            field_id = field['field_id']
-            if field_id in self.custom_field_widgets:
-                widget = self.custom_field_widgets[field_id]
-                value = field['value']
-
-                if isinstance(widget, QLineEdit):
-                    widget.setText(value or "")
-                elif isinstance(widget, QDateEdit) and value:
-                    try:
-                        date = QDate.fromString(value, "yyyy-MM-dd")
-                        widget.setDate(date)
-                    except Exception:
-                        pass
-                elif isinstance(widget, QComboBox) and value:
-                    index = widget.findText(value)
-                    if index >= 0:
-                        widget.setCurrentIndex(index)
-                elif isinstance(widget, QCheckBox):
-                    widget.setChecked(value == "1")
-
-        # Tags - extract to simple tuples
-        self.current_tags = [(tag['name'], tag['category']) for tag in data['tags']]
-        self._update_tags_display()
-
-        # Photos - extract needed info
-        self.photos = data['photos']
-        self._update_photos_display()
-
-        # Equipment for astronomy
-        if is_astronomy and 'equipment' in data:
-            self.selected_equipment_ids = [eq['id'] for eq in data['equipment']]
-
-            if hasattr(self, 'equipment_display'):
-                if self.selected_equipment_ids:
-                    equipment_list = [eq['name'] for eq in data['equipment']]
-                    self.equipment_display.setText(", ".join(equipment_list))
-                else:
-                    self.equipment_display.setText("No equipment selected")
 
     def _update_field_labels(self):
         """Update field labels with correct terminology"""
@@ -836,6 +673,107 @@ class ObservationForm(QWidget):
                 pass
         return options
 
+    def _load_observation_data(self, session, observation_id):
+        """Load data for an existing observation"""
+        # Get the observation
+        from db.models import Observation
+        observation = session.query(Observation).filter_by(
+            id=observation_id
+        ).first()
+
+        if not observation:
+            QMessageBox.warning(self, "Error", "Observation not found")
+            return
+
+        # Fill basic fields
+        self.entry_name_edit.setText(observation.entry_name)
+
+        if observation.observation_date:
+            date = QDateTime.fromString(observation.observation_date.strftime("%Y-%m-%d %H:%M:%S"),
+                                        "yyyy-MM-dd hh:mm:ss")
+            self.date_edit.setDateTime(date)
+
+        if observation.location:
+            self.location_edit.setText(observation.location)
+
+        # Handle different coordinate types based on lifelist type
+        is_astronomy = self.check_if_astronomy_lifelist()
+
+        if is_astronomy:
+            # For astronomy, get RA/Dec from custom fields
+            for field_value in observation.custom_fields:
+                if field_value.field.field_name == "Right Ascension":
+                    self.ra_edit.setText(field_value.value or "")
+                elif field_value.field.field_name == "Declination":
+                    self.dec_edit.setText(field_value.value or "")
+        else:
+            # For regular lifelists, use lat/lon
+            if observation.latitude is not None:
+                self.latitude_edit.setText(str(observation.latitude))
+
+            if observation.longitude is not None:
+                self.longitude_edit.setText(str(observation.longitude))
+
+        if observation.tier:
+            index = self.tier_combo.findText(observation.tier)
+            if index >= 0:
+                self.tier_combo.setCurrentIndex(index)
+
+        if observation.notes:
+            self.notes_edit.setText(observation.notes)
+
+        # Fill custom field values
+        for field_value in observation.custom_fields:
+            field_id = field_value.field_id
+            if field_id in self.custom_field_widgets:
+                widget = self.custom_field_widgets[field_id]
+                value = field_value.value
+
+                if isinstance(widget, QLineEdit):
+                    widget.setText(value or "")
+                elif isinstance(widget, QDateEdit) and value:
+                    try:
+                        date = QDate.fromString(value, "yyyy-MM-dd")
+                        widget.setDate(date)
+                    except Exception:
+                        pass
+                elif isinstance(widget, QComboBox) and value:
+                    index = widget.findText(value)
+                    if index >= 0:
+                        widget.setCurrentIndex(index)
+                elif isinstance(widget, QCheckBox):
+                    widget.setChecked(value == "1")
+
+        # Load tags
+        for tag in observation.tags:
+            self.current_tags.append((tag.name, tag.category))
+
+        self._update_tags_display()
+
+        # Load photos
+        for photo in observation.photos:
+            self.photos.append({
+                "id": photo.id,
+                "path": photo.file_path,
+                "is_primary": photo.is_primary
+            })
+
+        self._update_photos_display()
+
+        # Load equipment if astronomy lifelist
+        if is_astronomy:
+            from db.repositories import EquipmentRepository
+            equipment = EquipmentRepository.get_observation_equipment(session, observation_id)
+            self.selected_equipment_ids = [eq.id for eq in equipment]
+
+            # Update display
+            if hasattr(self, 'equipment_display'):
+                if self.selected_equipment_ids:
+                    equipment_list = [eq.name for eq in equipment]
+                    self.equipment_display.setText(", ".join(equipment_list))
+                else:
+                    self.equipment_display.setText("No equipment selected")
+
     def _add_tag(self):
         """Add a tag to the current observation"""
         tag_name = self.tag_edit.text().strip()
@@ -960,11 +898,11 @@ class ObservationForm(QWidget):
         # Update display
         self._update_photos_display()
 
-        # Auto-populate coordinates if empty and photo has EXIF data
+        # Autopopulate coordinates if empty and photo has EXIF data
         self._auto_populate_coordinates()
 
     def _auto_populate_coordinates(self):
-        """Auto-populate observation coordinates from photos if available"""
+        """Autopopulate observation coordinates from photos if available"""
         # Check if observation coordinates are already set
         if (hasattr(self, 'latitude_edit') and hasattr(self, 'longitude_edit') and
                 self.latitude_edit.text().strip() and self.longitude_edit.text().strip()):
@@ -1171,7 +1109,7 @@ class ObservationForm(QWidget):
         tier = self.tier_combo.currentText() or None
         notes = self.notes_edit.toPlainText().strip() or None
 
-        # Use a fresh session for saving
+        # Save to database
         with self.db_manager.session_scope() as session:
             from db.models import Observation
 
@@ -1353,35 +1291,18 @@ class ObservationForm(QWidget):
                         self._apply_rotation_to_stored_photo(photo, rotation, session)
 
             # Check if this is an existing photo by path
-            elif self.current_observation_id:
-                # Get existing photos again in case of session expiry
-                existing_photos = PhotoRepository.get_observation_photos(session, observation.id)
-                photo_with_path = next((p for p in existing_photos if p.file_path == path), None)
+            elif self.current_observation_id and hasattr(session, 'existing_photos') and any(
+                    p.file_path == path for p in existing_photos):
+                # Existing photo by path - update primary flag if needed
+                photo = next(p for p in existing_photos if p.file_path == path)
+                if photo.is_primary != photo_data.get("is_primary", False):
+                    PhotoRepository.set_primary_photo(session, photo.id)
 
-                if photo_with_path:
-                    # Existing photo by path - update primary flag if needed
-                    if photo_with_path.is_primary != photo_data.get("is_primary", False):
-                        PhotoRepository.set_primary_photo(session, photo_with_path.id)
-
-                    # Apply rotation if needed
-                    if rotation != 0:
-                        self._apply_rotation_to_stored_photo(photo_with_path, rotation, session)
-                else:
-                    # New photo - store it
-                    if rotation != 0:
-                        # Rotate the image before storing
-                        rotated_path = self._create_rotated_copy(path, rotation)
-                        if rotated_path:
-                            path = rotated_path
-
-                    self.photo_manager.store_photo(
-                        session,
-                        observation.id,
-                        path,
-                        is_primary=photo_data.get("is_primary", False)
-                    )
+                # Apply rotation if needed
+                if rotation != 0:
+                    self._apply_rotation_to_stored_photo(photo, rotation, session)
             else:
-                # New photo for new observation - store it
+                # New photo - store it
                 if rotation != 0:
                     # Rotate the image before storing
                     rotated_path = self._create_rotated_copy(path, rotation)
