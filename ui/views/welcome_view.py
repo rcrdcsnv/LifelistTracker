@@ -161,19 +161,17 @@ class WelcomeView(QWidget):
         # Create a few sample lifelists
         with self.db_manager.session_scope() as session:
             from db.repositories import LifelistRepository, ObservationRepository
+            from db.models import Lifelist, LifelistType, LifelistTypeTier, Tag, CustomField, ObservationCustomField
             from datetime import datetime, timedelta
             import random
+            import json
 
             # Check if we already have sample lifelists
-            if (
-                sample_lifelists := session.query(
-                    self.db_manager.engine.models.Lifelist
-                )
-                .filter(
-                    self.db_manager.engine.models.Lifelist.name.like("Sample%")
-                )
-                .all()
-            ):
+            sample_lifelists = session.query(Lifelist).filter(
+                Lifelist.name.like("Sample%")
+            ).all()
+
+            if sample_lifelists:
                 # We already have samples, just show them
                 message = "Sample lifelists are already available in your list. Try opening one!"
                 QMessageBox.information(self, "Sample Lifelists", message)
@@ -185,7 +183,7 @@ class WelcomeView(QWidget):
             # If no types exist, create default types from config
             if not lifelist_types:
                 # Create a bird watching type
-                bird_type = self.db_manager.engine.models.LifelistType(
+                bird_type = LifelistType(
                     name="Wildlife",
                     description="A lifelist for tracking wildlife sightings",
                     icon=""
@@ -196,7 +194,7 @@ class WelcomeView(QWidget):
                 # Add tiers
                 tiers = ["wild", "heard", "captive"]
                 for i, tier_name in enumerate(tiers):
-                    tier = self.db_manager.engine.models.LifelistTypeTier(
+                    tier = LifelistTypeTier(
                         lifelist_type_id=bird_type.id,
                         tier_name=tier_name,
                         tier_order=i
@@ -222,16 +220,16 @@ class WelcomeView(QWidget):
 
             # Add custom fields if not already present
             custom_fields = session.query(
-                self.db_manager.engine.models.CustomField
+                CustomField
             ).filter(
-                self.db_manager.engine.models.CustomField.lifelist_id == lifelist_id
+                CustomField.lifelist_id == lifelist_id
             ).all()
 
             if not custom_fields:
                 # Add some bird-specific fields
                 fields = [
-                    ("Scientific Name", "text", 0),
-                    ("Family", "text", 0),
+                    ("Scientific Name", "text", 0, None),
+                    ("Family", "text", 0, None),
                     ("Location Type", "choice", 0, {"options": [
                         {"label": "Forest", "value": "forest"},
                         {"label": "Wetland", "value": "wetland"},
@@ -239,16 +237,16 @@ class WelcomeView(QWidget):
                         {"label": "Shore", "value": "shore"},
                         {"label": "Mountain", "value": "mountain"}
                     ]}),
-                    ("Weather", "text", 0),
-                    ("Behavior", "text", 0)
+                    ("Weather", "text", 0, None),
+                    ("Behavior", "text", 0, None)
                 ]
 
                 for i, (name, type_, required, options) in enumerate(fields):
-                    field = self.db_manager.engine.models.CustomField(
+                    field = CustomField(
                         lifelist_id=lifelist_id,
                         field_name=name,
                         field_type=type_,
-                        field_options=options if 'options' in locals() else None,
+                        field_options=options,
                         is_required=bool(required),
                         display_order=i
                     )
@@ -258,9 +256,9 @@ class WelcomeView(QWidget):
 
                 # Get the fields back to use their IDs
                 custom_fields = session.query(
-                    self.db_manager.engine.models.CustomField
+                    CustomField
                 ).filter(
-                    self.db_manager.engine.models.CustomField.lifelist_id == lifelist_id
+                    CustomField.lifelist_id == lifelist_id
                 ).all()
 
             # Create field ID mapping
@@ -338,14 +336,10 @@ class WelcomeView(QWidget):
 
             # Create habitat tags
             for tag_name in habitat_tags:
-                tag = session.query(
-                    self.db_manager.engine.models.Tag
-                ).filter(
-                    self.db_manager.engine.models.Tag.name == tag_name
-                ).first()
+                tag = session.query(Tag).filter(Tag.name == tag_name).first()
 
                 if not tag:
-                    tag = self.db_manager.engine.models.Tag(
+                    tag = Tag(
                         name=tag_name,
                         category="Habitat"
                     )
@@ -356,14 +350,10 @@ class WelcomeView(QWidget):
 
             # Create behavior tags
             for tag_name in behavior_tags:
-                tag = session.query(
-                    self.db_manager.engine.models.Tag
-                ).filter(
-                    self.db_manager.engine.models.Tag.name == tag_name
-                ).first()
+                tag = session.query(Tag).filter(Tag.name == tag_name).first()
 
                 if not tag:
-                    tag = self.db_manager.engine.models.Tag(
+                    tag = Tag(
                         name=tag_name,
                         category="Behavior"
                     )
@@ -446,7 +436,7 @@ class WelcomeView(QWidget):
 
             if not book_type:
                 # Create a book collection type
-                book_type = self.db_manager.engine.models.LifelistType(
+                book_type = LifelistType(
                     name="Books",
                     description="A lifelist for tracking your book collection",
                     icon=""
@@ -457,7 +447,7 @@ class WelcomeView(QWidget):
                 # Add tiers
                 tiers = ["read", "currently reading", "want to read", "abandoned"]
                 for i, tier_name in enumerate(tiers):
-                    tier = self.db_manager.engine.models.LifelistTypeTier(
+                    tier = LifelistTypeTier(
                         lifelist_type_id=book_type.id,
                         tier_name=tier_name,
                         tier_order=i
@@ -510,13 +500,258 @@ class WelcomeView(QWidget):
                     notes=book.get("notes")
                 )
 
+            # Create an astronomy sample lifelist
+            astronomy_type = next((t for t in lifelist_types if t.name == "Astronomy"), None)
+
+            if not astronomy_type:
+                # Create astronomy type if it doesn't exist
+                astronomy_type = LifelistType(
+                    name="Astronomy",
+                    description="A lifelist for tracking astronomical observations",
+                    icon=""
+                )
+                session.add(astronomy_type)
+                session.flush()
+
+                # Add tiers
+                tiers = ["visual", "imaged", "sketched", "want to observe"]
+                for i, tier_name in enumerate(tiers):
+                    tier = LifelistTypeTier(
+                        lifelist_type_id=astronomy_type.id,
+                        tier_name=tier_name,
+                        tier_order=i
+                    )
+                    session.add(tier)
+
+                session.flush()
+
+            # Create astronomy lifelist
+            astronomy_lifelist_id = LifelistRepository.create_lifelist(
+                session,
+                "Sample Astronomy",
+                astronomy_type.id
+            )
+
+            # Add custom fields for astronomy
+            astro_custom_fields = session.query(CustomField).filter(
+                CustomField.lifelist_id == astronomy_lifelist_id
+            ).all()
+
+            if not astro_custom_fields:
+                # Add astronomy-specific fields
+                astro_fields = [
+                    ("Object Type", "choice", 1, {
+                        "options": [
+                            {"label": "Star", "value": "star"},
+                            {"label": "Planet", "value": "planet"},
+                            {"label": "Galaxy", "value": "galaxy"},
+                            {"label": "Nebula", "value": "nebula"},
+                            {"label": "Star Cluster", "value": "star_cluster"},
+                            {"label": "Solar System", "value": "solar_system"}
+                        ]
+                    }),
+                    ("Catalog Number", "text", 0, None),
+                    ("Right Ascension", "text", 0, None),
+                    ("Declination", "text", 0, None),
+                    ("Magnitude", "number", 0, None),
+                    ("Equipment", "text", 0, None),
+                    ("Seeing Conditions", "choice", 0, {
+                        "options": [
+                            {"label": "Poor", "value": "poor"},
+                            {"label": "Fair", "value": "fair"},
+                            {"label": "Good", "value": "good"},
+                            {"label": "Excellent", "value": "excellent"}
+                        ]
+                    }),
+                    ("Light Pollution", "choice", 0, {
+                        "options": [
+                            {"label": "Bortle 1 - Excellent", "value": "bortle1"},
+                            {"label": "Bortle 2 - Truly Dark", "value": "bortle2"},
+                            {"label": "Bortle 3 - Rural Sky", "value": "bortle3"},
+                            {"label": "Bortle 4 - Rural/Suburban", "value": "bortle4"},
+                            {"label": "Bortle 5 - Suburban Sky", "value": "bortle5"},
+                            {"label": "Bortle 6 - Bright Suburban", "value": "bortle6"},
+                            {"label": "Bortle 7 - Suburban/Urban", "value": "bortle7"},
+                            {"label": "Bortle 8 - City Sky", "value": "bortle8"},
+                            {"label": "Bortle 9 - Inner City Sky", "value": "bortle9"}
+                        ]
+                    }),
+                    ("Exposure Details", "text", 0, None),
+                    ("Processing Software", "text", 0, None)
+                ]
+
+                for i, (name, type_, required, options) in enumerate(astro_fields):
+                    field = CustomField(
+                        lifelist_id=astronomy_lifelist_id,
+                        field_name=name,
+                        field_type=type_,
+                        field_options=options,
+                        is_required=bool(required),
+                        display_order=i
+                    )
+                    session.add(field)
+
+                session.flush()
+
+                astro_custom_fields = session.query(CustomField).filter(
+                    CustomField.lifelist_id == astronomy_lifelist_id
+                ).all()
+
+            # Create field ID mapping for astronomy
+            astro_field_mapping = {}
+            for field in astro_custom_fields:
+                astro_field_mapping[field.field_name] = field.id
+
+            # Add sample astronomy observations
+            celestial_objects = [
+                {
+                    "entry_name": "M31 Andromeda Galaxy",
+                    "tier": "imaged",
+                    "location": "Dark Sky Park",
+                    "notes": "Beautiful spiral galaxy, visible to naked eye.",
+                    "object_type": "galaxy",
+                    "catalog_number": "M31, NGC 224",
+                    "right_ascension": "00h 42m 44.3s",
+                    "declination": "+41° 16' 9\"",
+                    "magnitude": "3.44",
+                    "equipment": "8\" SCT, DSLR Camera",
+                    "seeing_conditions": "good",
+                    "light_pollution": "bortle3",
+                    "exposure_details": "20 x 120s exposures, ISO 1600",
+                    "processing_software": "PixInsight"
+                },
+                {
+                    "entry_name": "Jupiter",
+                    "tier": "visual",
+                    "location": "Backyard",
+                    "notes": "Four Galilean moons visible. Great Red Spot observed.",
+                    "object_type": "planet",
+                    "catalog_number": "Jupiter",
+                    "right_ascension": "20h 10m 00s",  # Position varies
+                    "declination": "-20° 30' 00\"",
+                    "magnitude": "-2.94",
+                    "equipment": "10\" Dobsonian",
+                    "seeing_conditions": "fair",
+                    "light_pollution": "bortle5",
+                    "exposure_details": "Visual observation",
+                    "processing_software": ""
+                },
+                {
+                    "entry_name": "M42 Orion Nebula",
+                    "tier": "imaged",
+                    "location": "Observatory",
+                    "notes": "Amazing star-forming region with intricate details.",
+                    "object_type": "nebula",
+                    "catalog_number": "M42, NGC 1976",
+                    "right_ascension": "05h 35m 17.3s",
+                    "declination": "-05° 23' 28\"",
+                    "magnitude": "4.0",
+                    "equipment": "APO Refractor, Cooled CCD",
+                    "seeing_conditions": "excellent",
+                    "light_pollution": "bortle4",
+                    "exposure_details": "LRGB 20x5min each filter",
+                    "processing_software": "AstroPixelProcessor"
+                }
+            ]
+
+            # Create astronomy tags
+            astro_object_tags = ["Galaxy", "Nebula", "Star Cluster", "Planet", "Star", "Moon"]
+            astro_condition_tags = ["Dark Sky", "Light Polluted", "Good Seeing", "Poor Seeing"]
+
+            # Add astronomy tags
+            for tag_name in astro_object_tags:
+                tag = session.query(Tag).filter(Tag.name == tag_name).first()
+                if not tag:
+                    tag = Tag(
+                        name=tag_name,
+                        category="Celestial Object"
+                    )
+                    session.add(tag)
+                    session.flush()
+                tag_ids[tag_name] = tag.id
+
+            for tag_name in astro_condition_tags:
+                tag = session.query(Tag).filter(Tag.name == tag_name).first()
+                if not tag:
+                    tag = Tag(
+                        name=tag_name,
+                        category="Observing Conditions"
+                    )
+                    session.add(tag)
+                    session.flush()
+                tag_ids[tag_name] = tag.id
+
+            # Add observations
+            for obj in celestial_objects:
+                # Create observation with random date in past year
+                days_ago = random.randint(1, 365)
+                obs_date = datetime.now() - timedelta(days=days_ago)
+
+                obs_id = ObservationRepository.create_observation(
+                    session,
+                    astronomy_lifelist_id,
+                    obj["entry_name"],
+                    tier=obj["tier"],
+                    observation_date=obs_date,
+                    location=obj["location"],
+                    notes=obj["notes"]
+                )
+
+                if not obs_id:
+                    continue
+
+                # Add custom field values
+                custom_values = {}
+                for field_name in ["object_type", "catalog_number", "right_ascension", "declination",
+                                   "magnitude", "equipment", "seeing_conditions", "light_pollution",
+                                   "exposure_details", "processing_software"]:
+                    if field_name in obj and field_name in astro_field_mapping:
+                        custom_values[astro_field_mapping[field_name]] = obj[field_name]
+
+                if custom_values:
+                    ObservationRepository.set_observation_custom_fields(
+                        session,
+                        obs_id,
+                        custom_values
+                    )
+
+                # Add appropriate tags based on object type and conditions
+                obs_tags = []
+
+                # Object type tags
+                if obj.get("object_type") == "galaxy":
+                    obs_tags.append(tag_ids.get("Galaxy"))
+                elif obj.get("object_type") == "nebula":
+                    obs_tags.append(tag_ids.get("Nebula"))
+                elif obj.get("object_type") == "star_cluster":
+                    obs_tags.append(tag_ids.get("Star Cluster"))
+                elif obj.get("object_type") == "planet":
+                    obs_tags.append(tag_ids.get("Planet"))
+
+                # Condition tags
+                if obj.get("seeing_conditions") in ["good", "excellent"]:
+                    obs_tags.append(tag_ids.get("Good Seeing"))
+                else:
+                    obs_tags.append(tag_ids.get("Poor Seeing"))
+
+                if obj.get("light_pollution", "").startswith(("bortle1", "bortle2", "bortle3")):
+                    obs_tags.append(tag_ids.get("Dark Sky"))
+                else:
+                    obs_tags.append(tag_ids.get("Light Polluted"))
+
+                # Add tags to observation
+                if obs_tags:
+                    from db.repositories import TagRepository
+                    TagRepository.set_observation_tags(session, obs_id, [t for t in obs_tags if t])
+
             # Commit changes
             session.commit()
 
             message = (
                 "Sample lifelists have been created! You can now explore:\n\n"
                 "1. Sample Bird Watching - a wildlife lifelist with observations and custom fields\n"
-                "2. Sample Book Collection - a book tracking lifelist\n\n"
+                "2. Sample Book Collection - a book tracking lifelist\n"
+                "3. Sample Astronomy - an astronomy lifelist with celestial objects\n\n"
                 "Open them from the sidebar to explore their features."
             )
 

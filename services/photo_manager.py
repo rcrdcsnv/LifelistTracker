@@ -4,7 +4,7 @@ from PIL import Image
 import shutil
 from typing import Optional, Union
 from utils.cache import LRUCache
-from utils.image import extract_exif_data
+from utils.image import extract_exif_data, fits_to_image, extract_fits_data
 from db.models import Photo, Observation
 from sqlalchemy.orm import Session
 
@@ -77,6 +77,19 @@ class PhotoManager:
 
             if not observation:
                 return None
+
+            # Check if this is a FITS file
+            file_extension = Path(file_path).suffix.lower()
+            if file_extension in ['.fits', '.fit']:
+                # Convert FITS to a PNG for viewing
+                png_path = f'{str(file_path)}.png'
+                fits_to_image(file_path, png_path)
+
+                # Use the PNG for display but store relation to original FITS
+                file_path = png_path
+                # Store metadata about original FITS
+                fits_metadata = extract_fits_data(file_path)
+                # Could store this in a new table or in the additional_data JSON field
 
             # Check if this file is already stored for this observation
             file_path = Path(file_path)

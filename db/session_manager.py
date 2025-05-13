@@ -12,6 +12,29 @@ class SessionManager:
         self.db_manager = db_manager
         self._view_sessions = {}  # view_id -> session
 
+    def get_fresh_data(self, repository_class, method_name, *args, **kwargs):
+        """Execute a repository method with a fresh session and return its result.
+        This is more efficient than creating a DTO for every object."""
+        with self.list_session() as session:
+            method = getattr(repository_class, method_name)
+            return method(session, *args, **kwargs)
+
+    @contextmanager
+    def batch_operation(self, chunk_size=100):
+        """Context manager for operations that process data in batches.
+        Automatically commits and clears session after each chunk."""
+        session = self.db_manager.Session()
+        try:
+            batch_count = 0
+            yield session
+
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
+
     @contextmanager
     def list_session(self):
         """Short-lived session for list operations"""

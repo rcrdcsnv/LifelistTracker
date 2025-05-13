@@ -85,6 +85,50 @@ class LifelistTypesConfig(BaseModel):
                 CustomField(name="Rating", type="rating", options={"max": 5})
             ]
         ),
+        "Astronomy": LifelistTypeTemplate(
+            tiers=["visual", "imaged", "sketched", "want to observe"],
+            entry_term="object",
+            observation_term="observation",
+            default_fields=[
+                CustomField(name="Object Type", type="choice", required=1, options={
+                    "options": [
+                        {"label": "Star", "value": "star"},
+                        {"label": "Planet", "value": "planet"},
+                        {"label": "Galaxy", "value": "galaxy"},
+                        {"label": "Nebula", "value": "nebula"},
+                        {"label": "Cluster", "value": "cluster"},
+                    ]
+                }),
+                CustomField(name="Catalog Number", type="text"),
+                CustomField(name="Right Ascension", type="text"),
+                CustomField(name="Declination", type="text"),
+                CustomField(name="Magnitude", type="number"),
+                CustomField(name="Equipment", type="text"),
+                CustomField(name="Seeing Conditions", type="choice", options={
+                    "options": [
+                        {"label": "Poor", "value": "poor"},
+                        {"label": "Fair", "value": "fair"},
+                        {"label": "Good", "value": "good"},
+                        {"label": "Excellent", "value": "excellent"}
+                    ]
+                }),
+                CustomField(name="Light Pollution", type="choice", options={
+                    "options": [
+                        {"label": "Bortle 1 - Excellent", "value": "bortle1"},
+                        {"label": "Bortle 2 - Typical Truly Dark Site", "value": "bortle2"},
+                        {"label": "Bortle 3 - Rural Sky", "value": "bortle3"},
+                        {"label": "Bortle 4 - Rural/Suburban Transition", "value": "bortle4"},
+                        {"label": "Bortle 5 - Suburban Sky", "value": "bortle5"},
+                        {"label": "Bortle 6 - Bright Suburban Sky", "value": "bortle6"},
+                        {"label": "Bortle 7 - Suburban/Urban Transition", "value": "bortle7"},
+                        {"label": "Bortle 8 - City Sky", "value": "bortle8"},
+                        {"label": "Bortle 9 - Inner City Sky", "value": "bortle9"}
+                    ]
+                }),
+                CustomField(name="Exposure Details", type="text"),
+                CustomField(name="Processing Software", type="text")
+            ]
+        ),
         "Foods": LifelistTypeTemplate(
             tiers=["tried", "cooked", "want to try"],
             entry_term="dish",

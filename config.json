@@ -168,6 +168,105 @@
           }
         ]
       },
+      "Astronomy": {
+        "tiers": [
+          "visual",
+          "imaged",
+          "sketched",
+          "want to observe"
+        ],
+        "entry_term": "object",
+        "observation_term": "observation",
+        "default_fields": [
+          {
+            "name": "Object Type",
+            "type": "choice",
+            "required": 1,
+            "options": {
+              "options": [
+                {"label": "Star", "value": "star"},
+                {"label": "Planet", "value": "planet"},
+                {"label": "Galaxy", "value": "galaxy"},
+                {"label": "Nebula", "value": "nebula"},
+                {"label": "Cluster", "value": "cluster"}
+              ]
+            }
+          },
+          {
+            "name": "Catalog Number",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Right Ascension",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Declination",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Magnitude",
+            "type": "number",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Equipment",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Seeing Conditions",
+            "type": "choice",
+            "required": 0,
+            "options": {
+              "options": [
+                {"label": "Poor", "value": "poor"},
+                {"label": "Fair", "value": "fair"},
+                {"label": "Good", "value": "good"},
+                {"label": "Excellent", "value": "excellent"}
+              ]
+            }
+          },
+          {
+            "name": "Light Pollution",
+            "type": "choice",
+            "required": 0,
+            "options": {
+              "options": [
+                {"label": "Bortle 1 - Excellent", "value": "bortle1"},
+                {"label": "Bortle 2 - Truly Dark", "value": "bortle2"},
+                {"label": "Bortle 3 - Rural Sky", "value": "bortle3"},
+                {"label": "Bortle 4 - Rural/Suburban", "value": "bortle4"},
+                {"label": "Bortle 5 - Suburban Sky", "value": "bortle5"},
+                {"label": "Bortle 6 - Bright Suburban", "value": "bortle6"},
+                {"label": "Bortle 7 - Suburban/Urban", "value": "bortle7"},
+                {"label": "Bortle 8 - City Sky", "value": "bortle8"},
+                {"label": "Bortle 9 - Inner City Sky", "value": "bortle9"}
+              ]
+            }
+          },
+          {
+            "name": "Exposure Details",
+            "type": "text",
+            "required": 0,
+            "options": null
+          },
+          {
+            "name": "Processing Software",
+            "type": "text",
+            "required": 0,
+            "options": null
+          }
+        ]
+      },
       "Foods": {
         "tiers": [
           "tried",

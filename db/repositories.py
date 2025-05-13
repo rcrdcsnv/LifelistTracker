@@ -4,7 +4,7 @@ from sqlalchemy import func, or_, desc
 from typing import List, Optional, Dict, Any, Tuple
 from .models import (Lifelist, LifelistType, LifelistTier, LifelistTypeTier,
                      Observation, Photo, Tag, CustomField, ObservationCustomField,
-                     Classification, ClassificationEntry, TagHierarchy)
+                     Classification, ClassificationEntry, TagHierarchy, Equipment, ObservationEquipment)
 
 
 class LifelistRepository:
@@ -93,8 +93,11 @@ class LifelistRepository:
     @staticmethod
     def delete_lifelist(session: Session, lifelist_id: int) -> bool:
         """Delete a lifelist by ID"""
-        lifelist = session.query(Lifelist).filter(Lifelist.id == lifelist_id).first()
-        if lifelist:
+        if (
+            lifelist := session.query(Lifelist)
+            .filter(Lifelist.id == lifelist_id)
+            .first()
+        ):
             session.delete(lifelist)
             return True
         return False
@@ -503,6 +506,63 @@ class ObservationRepository:
             Observation.entry_name == entry_name
         ).order_by(desc(Observation.observation_date)).all()
 
+    @staticmethod
+    def get_observation_for_display(session: Session, observation_id: int) -> Dict[str, Any]:
+        """Get complete observation data ready for display in UI.
+        All data is extracted to basic Python types while the session is active."""
+
+        from db.models import Observation, ObservationCustomField
+        from sqlalchemy.orm import joinedload
+
+        # Load observation with all relationships eagerly loaded
+        observation = session.query(Observation).filter_by(
+            id=observation_id
+        ).options(
+            joinedload(Observation.photos),
+            joinedload(Observation.custom_fields).joinedload(ObservationCustomField.field),
+            joinedload(Observation.tags)
+        ).first()
+
+        if not observation:
+            return None
+
+        # Extract all needed data while session is still active
+        return {
+            'id': observation.id,
+            'entry_name': observation.entry_name,
+            'observation_date': observation.observation_date,
+            'location': observation.location,
+            'latitude': observation.latitude,
+            'longitude': observation.longitude,
+            'tier': observation.tier,
+            'notes': observation.notes,
+            'lifelist_id': observation.lifelist_id,
+            'custom_fields': [
+                {
+                    'field_id': cf.field_id,
+                    'field_name': cf.field.field_name,
+                    'value': cf.value
+                }
+                for cf in observation.custom_fields
+            ],
+            'tags': [
+                {
+                    'id': tag.id,
+                    'name': tag.name,
+                    'category': tag.category
+                }
+                for tag in observation.tags
+            ],
+            'photos': [
+                {
+                    'id': photo.id,
+                    'file_path': photo.file_path,
+                    'is_primary': photo.is_primary
+                }
+                for photo in observation.photos
+            ]
+        }
+
 
 class PhotoRepository:
     """Repository for Photo operations"""
@@ -647,6 +707,122 @@ class PhotoRepository:
             print(f"Error deleting photo: {e}")
             return False
 
+
+class EquipmentRepository:
+    """Repository for Equipment operations"""
+
+    @staticmethod
+    def get_equipment(session: Session, equipment_id: int) -> Optional[Equipment]:
+        """Get specific equipment by ID"""
+        return session.query(Equipment).filter(Equipment.id == equipment_id).first()
+
+    @staticmethod
+    def get_all_equipment(session: Session) -> List[Equipment]:
+        """Get all equipment"""
+        return session.query(Equipment).order_by(Equipment.name).all()
+
+    @staticmethod
+    def get_equipment_by_type(session: Session, equipment_type: str) -> List[Equipment]:
+        """Get equipment by type"""
+        return session.query(Equipment).filter(Equipment.type == equipment_type).order_by(Equipment.name).all()
+
+    @staticmethod
+    def create_equipment(session: Session, name: str, equipment_type: str,
+                         specs: Optional[Dict[str, Any]] = None,
+                         notes: Optional[str] = None,
+                         aperture: Optional[float] = None,
+                         focal_length: Optional[float] = None,
+                         focal_ratio: Optional[float] = None,
+                         sensor_type: Optional[str] = None,
+                         pixel_size: Optional[float] = None,
+                         resolution: Optional[str] = None,
+                         details: Optional[str] = None,
+                         purchase_date: Optional[Any] = None) -> Optional[int]:
+        """Create new equipment"""
+        try:
+            equipment = Equipment(
+                name=name,
+                type=equipment_type,
+                specs=specs,
+                notes=notes,
+                aperture=aperture,
+                focal_length=focal_length,
+                focal_ratio=focal_ratio,
+                sensor_type=sensor_type,
+                pixel_size=pixel_size,
+                resolution=resolution,
+                details=details,
+                purchase_date=purchase_date
+            )
+            session.add(equipment)
+            session.flush()  # To get the ID
+            return equipment.id
+        except Exception as e:
+            print(f"Error creating equipment: {e}")
+            return None
+
+    @staticmethod
+    def update_equipment(session: Session, equipment_id: int, **kwargs) -> bool:
+        """Update equipment properties"""
+        try:
+            equipment = session.query(Equipment).filter(Equipment.id == equipment_id).first()
+            if not equipment:
+                return False
+
+            # Update provided fields
+            for key, value in kwargs.items():
+                if hasattr(equipment, key):
+                    setattr(equipment, key, value)
+
+            return True
+        except Exception as e:
+            print(f"Error updating equipment: {e}")
+            return False
+
+    @staticmethod
+    def delete_equipment(session: Session, equipment_id: int) -> bool:
+        """Delete equipment"""
+        try:
+            equipment = session.query(Equipment).filter(Equipment.id == equipment_id).first()
+            if not equipment:
+                return False
+
+            session.delete(equipment)
+            return True
+        except Exception as e:
+            print(f"Error deleting equipment: {e}")
+            return False
+
+    @staticmethod
+    def get_observation_equipment(session: Session, observation_id: int) -> List[Equipment]:
+        """Get equipment used for an observation"""
+        return session.query(Equipment).join(
+            ObservationEquipment, ObservationEquipment.equipment_id == Equipment.id
+        ).filter(
+            ObservationEquipment.observation_id == observation_id
+        ).all()
+
+    @staticmethod
+    def set_observation_equipment(session: Session, observation_id: int, equipment_ids: List[int]) -> bool:
+        """Set equipment used for an observation"""
+        try:
+            # Remove existing equipment
+            session.query(ObservationEquipment).filter(
+                ObservationEquipment.observation_id == observation_id
+            ).delete(synchronize_session='fetch')
+
+            # Add new equipment
+            for equipment_id in equipment_ids:
+                obs_equipment = ObservationEquipment(
+                    observation_id=observation_id,
+                    equipment_id=equipment_id
+                )
+                session.add(obs_equipment)
+
+            return True
+        except Exception as e:
+            print(f"Error setting observation equipment: {e}")
+            return False
 
 class TagRepository:
     """Repository for Tag operations"""

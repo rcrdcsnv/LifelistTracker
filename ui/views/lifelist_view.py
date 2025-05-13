@@ -280,6 +280,11 @@ class LifelistView(QWidget):
 
         header_layout.addStretch()
 
+        if self.lifelist_type == "Astronomy":
+            self.sky_map_btn = QPushButton("Celestial Map")
+            self.sky_map_btn.clicked.connect(self._view_celestial_map)
+            header_layout.addWidget(self.sky_map_btn)
+
         self.map_btn = QPushButton("View Map")
         self.map_btn.clicked.connect(self._view_map)
         header_layout.addWidget(self.map_btn)
@@ -502,4 +507,11 @@ class LifelistView(QWidget):
         from ui.dialogs.map_dialog import MapDialog
 
         dialog = MapDialog(self, self.db_manager, self.lifelist_id, self.observation_term)
+        dialog.exec()
+
+    def _view_celestial_map(self):
+        """Show a map of celestial objects"""
+        from ui.dialogs.celestial_map_dialog import CelestialMapDialog
+
+        dialog = CelestialMapDialog(self, self.db_manager, self.lifelist_id)
         dialog.exec()

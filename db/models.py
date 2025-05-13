@@ -154,6 +154,7 @@ class Observation(Base):
     # Relationships
     lifelist = relationship("Lifelist", back_populates="observations")
     photos = relationship("Photo", back_populates="observation", cascade="all, delete-orphan")
+    equipment_used = relationship("ObservationEquipment", back_populates="observation")
     custom_fields = relationship("ObservationCustomField", back_populates="observation", cascade="all, delete-orphan")
     tags = relationship("Tag", secondary=observation_tags, back_populates="observations")
 
@@ -201,6 +202,41 @@ class Photo(Base):
         Index('idx_photos_primary', 'observation_id', 'is_primary'),
     )
 
+
+class Equipment(Base):
+    __tablename__ = 'equipment'
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    type = Column(String)  # Telescope, Camera, Mount, etc.
+    specs = Column(JSON)
+    notes = Column(Text)
+
+    # For telescopes
+    aperture = Column(Float)
+    focal_length = Column(Float)
+    focal_ratio = Column(Float)
+
+    # For cameras
+    sensor_type = Column(String)
+    pixel_size = Column(Float)
+    resolution = Column(String)
+
+    # For other equipment
+    details = Column(Text)
+    purchase_date = Column(DateTime)
+
+
+class ObservationEquipment(Base):
+    __tablename__ = 'observation_equipment'
+
+    id = Column(Integer, primary_key=True)
+    observation_id = Column(Integer, ForeignKey('observations.id', ondelete='CASCADE'))
+    equipment_id = Column(Integer, ForeignKey('equipment.id', ondelete='CASCADE'))
+
+    # Relationships
+    observation = relationship("Observation", back_populates="equipment_used")
+    equipment = relationship("Equipment")
 
 class Tag(Base):
     __tablename__ = 'tags'

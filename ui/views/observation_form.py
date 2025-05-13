@@ -1,14 +1,15 @@
 # ui/views/observation_form.py
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QPushButton, QFrame, QScrollArea, QGridLayout,
-                               QLineEdit, QDateEdit, QComboBox, QTextEdit,
+                               QLineEdit, QDateEdit, QDateTimeEdit, QComboBox, QTextEdit,
                                QFileDialog, QMessageBox, QCheckBox)
-from PySide6.QtCore import Qt, QDate, Signal
+from PySide6.QtCore import Qt, QDate, QDateTime, Signal
 from PySide6.QtGui import QPixmap, QDoubleValidator, QTransform
 from pathlib import Path
 import json
 from datetime import datetime
 from PIL import Image
+
 
 # Add the ClickableCoordinateEdit class
 class ClickableCoordinateEdit(QLineEdit):
@@ -27,6 +28,7 @@ class ClickableCoordinateEdit(QLineEdit):
         if not self.text().strip():
             self.clicked.emit()
 
+
 class ObservationForm(QWidget):
     """Widget for adding or editing an observation"""
 
@@ -35,6 +37,7 @@ class ObservationForm(QWidget):
         self.main_window = main_window
         self.db_manager = main_window.db_manager
         self.photo_manager = photo_manager
+        self.session_manager = main_window.session_manager
 
         # State variables
         self.current_lifelist_id = None
@@ -52,11 +55,22 @@ class ObservationForm(QWidget):
         self.location_edit = None
         self.latitude_edit = None
         self.longitude_edit = None
+        self.ra_edit = None
+        self.dec_edit = None
         self.tier_combo = None
         self.notes_edit = None
         self.custom_field_widgets = {}  # Maps field_id to widget
         self.tags_container = None
         self.photos_container = None
+        self.selected_equipment_ids = []
+
+        # UI containers that will be shown/hidden based on lifelist type
+        self.earth_coords_container = None
+        self.sky_coords_container = None
+        self.equipment_container = None
+
+        # Current tags
+        self.current_tags = []  # List of (name, category) tuples
 
         self._setup_ui()
 
@@ -115,9 +129,10 @@ class ObservationForm(QWidget):
 
         # Date field
         basic_layout.addWidget(QLabel("Observation Date:"), 1, 0)
-        self.date_edit = QDateEdit()
+        self.date_edit = QDateTimeEdit()  # Use date time instead of just date
         self.date_edit.setCalendarPopup(True)
-        self.date_edit.setDate(QDate.currentDate())
+        self.date_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.date_edit.setDateTime(QDateTime.currentDateTime())
         basic_layout.addWidget(self.date_edit, 1, 1)
 
         # Location field
@@ -125,12 +140,34 @@ class ObservationForm(QWidget):
         self.location_edit = QLineEdit()
         basic_layout.addWidget(self.location_edit, 2, 1)
 
+        # Create both coordinate sections, but only show the appropriate one
+        self._create_earth_coordinates(basic_layout)
+        self._create_sky_coordinates(basic_layout)
+
+        # Equipment section (always create it, but only show for astronomy)
+        self._create_equipment_section(basic_layout)
+
+        # Tier field
+        basic_layout.addWidget(QLabel("Tier:"), 6, 0)
+        self.tier_combo = QComboBox()
+        basic_layout.addWidget(self.tier_combo, 6, 1)
+
+        # Notes field
+        basic_layout.addWidget(QLabel("Notes:"), 7, 0, Qt.AlignTop)
+        self.notes_edit = QTextEdit()
+        self.notes_edit.setMinimumHeight(100)
+        basic_layout.addWidget(self.notes_edit, 7, 1)
+
+        self.form_layout.addWidget(basic_frame)
+
+    def _create_earth_coordinates(self, basic_layout):
+        """Create earth coordinate widgets"""
         # Coordinates fields with enhanced UI
-        coords_label = QLabel("Coordinates:")
+        coords_label = QLabel("Earth Coordinates:")
         basic_layout.addWidget(coords_label, 3, 0)
 
-        coords_container = QWidget()
-        coords_layout = QHBoxLayout(coords_container)
+        self.earth_coords_container = QWidget()
+        coords_layout = QHBoxLayout(self.earth_coords_container)
         coords_layout.setContentsMargins(0, 0, 0, 0)
 
         # Use custom clickable coordinate fields
@@ -154,25 +191,58 @@ class ObservationForm(QWidget):
         self.clear_coords_btn.clicked.connect(self._clear_coordinates)
         coords_layout.addWidget(self.clear_coords_btn)
 
-        basic_layout.addWidget(coords_container, 3, 1)
+        basic_layout.addWidget(self.earth_coords_container, 3, 1)
 
-        # Add a help text for coordinates
-        coords_help = QLabel("Tip: Click on map button or coordinate fields to select from map")
-        coords_help.setStyleSheet("color: #666; font-size: 11px;")
-        basic_layout.addWidget(coords_help, 4, 1)
+    def _create_sky_coordinates(self, basic_layout):
+        """Create sky coordinate widgets for astronomy"""
+        # Sky coordinates section
+        sky_coords_label = QLabel("Sky Coordinates:")
+        basic_layout.addWidget(sky_coords_label, 3, 0)
 
-        # Tier field
-        basic_layout.addWidget(QLabel("Tier:"), 5, 0)
-        self.tier_combo = QComboBox()
-        basic_layout.addWidget(self.tier_combo, 5, 1)
+        self.sky_coords_container = QWidget()
+        sky_coords_layout = QHBoxLayout(self.sky_coords_container)
+        sky_coords_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Notes field
-        basic_layout.addWidget(QLabel("Notes:"), 6, 0, Qt.AlignTop)
-        self.notes_edit = QTextEdit()
-        self.notes_edit.setMinimumHeight(100)
-        basic_layout.addWidget(self.notes_edit, 6, 1)
+        # RA field
+        self.ra_edit = QLineEdit()
+        self.ra_edit.setPlaceholderText("RA (HH:MM:SS.S)")
+        sky_coords_layout.addWidget(self.ra_edit)
 
-        self.form_layout.addWidget(basic_frame)
+        # Dec field
+        self.dec_edit = QLineEdit()
+        self.dec_edit.setPlaceholderText("Dec (+/-DD:MM:SS.S)")
+        sky_coords_layout.addWidget(self.dec_edit)
+
+        # Add "Pick coordinates" button
+        self.sky_coords_btn = QPushButton("📡 Enter Coordinates")
+        self.sky_coords_btn.clicked.connect(self._get_sky_coordinates)
+        sky_coords_layout.addWidget(self.sky_coords_btn)
+
+        basic_layout.addWidget(self.sky_coords_container, 3, 1)
+
+        # Help text
+        self.coords_help = QLabel("Right Ascension and Declination for celestial objects")
+        self.coords_help.setStyleSheet("color: #666; font-size: 11px;")
+        basic_layout.addWidget(self.coords_help, 4, 1)
+
+    def _create_equipment_section(self, basic_layout):
+        """Create equipment section for astronomy"""
+        equipment_label = QLabel("Equipment:")
+        basic_layout.addWidget(equipment_label, 5, 0, Qt.AlignTop)
+
+        self.equipment_container = QWidget()
+        equipment_layout = QVBoxLayout(self.equipment_container)
+
+        # Equipment selection display
+        self.equipment_display = QLabel("No equipment selected")
+        equipment_layout.addWidget(self.equipment_display)
+
+        # Equipment selection button
+        self.select_equipment_btn = QPushButton("Select Equipment")
+        self.select_equipment_btn.clicked.connect(self._select_equipment)
+        equipment_layout.addWidget(self.select_equipment_btn)
+
+        basic_layout.addWidget(self.equipment_container, 5, 1)
 
     def _get_coordinates_from_map(self):
         """Get coordinates from an interactive map"""
@@ -200,10 +270,70 @@ class ObservationForm(QWidget):
             self.latitude_edit.setText(f"{lat:.6f}")
             self.longitude_edit.setText(f"{lon:.6f}")
 
+    def _get_sky_coordinates(self):
+        """Open dialog to enter sky coordinates"""
+        from ui.dialogs.sky_coordinates_dialog import SkyCoordinatesDialog
+
+        # Get current values if any
+        current_ra = self.ra_edit.text() if hasattr(self, 'ra_edit') else None
+        current_dec = self.dec_edit.text() if hasattr(self, 'dec_edit') else None
+
+        dialog = SkyCoordinatesDialog(self, current_ra, current_dec)
+        if dialog.exec():
+            ra, dec = dialog.get_coordinates()
+
+            # Update form fields
+            self.ra_edit.setText(ra)
+            self.dec_edit.setText(dec)
+
+            # Also update the custom fields if they exist
+            for field_id, widget in self.custom_field_widgets.items():
+                field_name = None
+
+                # Get field name using repository to avoid detached instance issues
+                with self.db_manager.session_scope() as session:
+                    from db.models import CustomField
+                    field = session.query(CustomField).filter_by(id=field_id).first()
+                    if field:
+                        field_name = field.field_name
+
+                if field_name == "Right Ascension" and isinstance(widget, QLineEdit):
+                    widget.setText(ra)
+                elif field_name == "Declination" and isinstance(widget, QLineEdit):
+                    widget.setText(dec)
+
     def _clear_coordinates(self):
         """Clear the coordinate fields"""
         self.latitude_edit.clear()
         self.longitude_edit.clear()
+
+    def _select_equipment(self):
+        """Open dialog to select equipment"""
+        from ui.dialogs.equipment_manager import EquipmentManagerDialog
+
+        dialog = EquipmentManagerDialog(
+            self,
+            self.db_manager,
+            for_selection=True,
+            observation_id=self.current_observation_id
+        )
+
+        if dialog.exec():
+            self.selected_equipment_ids = dialog.get_selected_equipment()
+
+            # Update display using a fresh session
+            with self.db_manager.session_scope() as session:
+                from db.repositories import EquipmentRepository
+                equipment_list = []
+
+                for eq_id in self.selected_equipment_ids:
+                    if equipment := EquipmentRepository.get_equipment(session, eq_id):
+                        equipment_list.append(equipment.name)
+
+                if equipment_list:
+                    self.equipment_display.setText(", ".join(equipment_list))
+                else:
+                    self.equipment_display.setText("No equipment selected")
 
     def _create_custom_fields_section(self):
         """Create the custom fields section"""
@@ -253,9 +383,6 @@ class ObservationForm(QWidget):
 
         self.form_layout.addWidget(self.tags_frame)
 
-        # Current tags
-        self.current_tags = []  # List of (name, category) tuples
-
     def _create_photos_section(self):
         """Create the photos section"""
         self.photos_frame = QFrame()
@@ -288,6 +415,19 @@ class ObservationForm(QWidget):
         self.photos_layout.addWidget(self.photos_container)
 
         self.form_layout.addWidget(self.photos_frame)
+
+    def check_if_astronomy_lifelist(self):
+        """Check if current lifelist is an astronomy type"""
+        if not self.current_lifelist_id:
+            return False
+
+        # Use a repository method with fresh session to avoid detached issues
+        with self.db_manager.session_scope() as session:
+            from db.repositories import LifelistRepository
+            lifelist = LifelistRepository.get_lifelist(session, self.current_lifelist_id)
+            if lifelist and lifelist[4] == "Astronomy":
+                return True
+        return False
 
     def _use_photo_coordinates(self):
         """Let user choose which photo coordinates to use"""
@@ -345,8 +485,9 @@ class ObservationForm(QWidget):
         self.photos = []
         self.images = []
         self.current_tags = []
+        self.selected_equipment_ids = []
 
-        # Get lifelist info to determine terminology
+        # Get lifelist info to determine terminology using a fresh session
         with self.db_manager.session_scope() as session:
             from db.repositories import LifelistRepository
             lifelist = LifelistRepository.get_lifelist(session, lifelist_id)
@@ -372,6 +513,17 @@ class ObservationForm(QWidget):
             # Update field labels
             self._update_field_labels()
 
+            # Show/hide astronomy-specific fields
+            is_astronomy = lifelist_type == "Astronomy"
+            if hasattr(self, 'earth_coords_container'):
+                self.earth_coords_container.setVisible(not is_astronomy)
+            if hasattr(self, 'sky_coords_container'):
+                self.sky_coords_container.setVisible(is_astronomy)
+            if hasattr(self, 'equipment_container'):
+                self.equipment_container.setVisible(is_astronomy)
+            if hasattr(self, 'coords_help'):
+                self.coords_help.setVisible(is_astronomy)
+
             # Load tiers
             tiers = LifelistRepository.get_lifelist_tiers(session, lifelist_id)
             self.tier_combo.clear()
@@ -385,10 +537,173 @@ class ObservationForm(QWidget):
 
             # If editing an existing observation, load its data
             if observation_id:
-                self._load_observation_data(session, observation_id)
+                # Use a repository method to get all observation data at once
+                from db.repositories import ObservationRepository
+
+                # Define a custom repository method for UI display
+                observation_data = self._get_observation_data_for_display(session, observation_id)
+
+                if observation_data:
+                    self._populate_form_from_data(observation_data, is_astronomy)
+
             elif entry_name:
                 # Pre-fill entry name
                 self.entry_name_edit.setText(entry_name)
+
+    def _get_observation_data_for_display(self, session, observation_id):
+        """Get observation data ready for display, avoiding detached instance issues"""
+        from db.models import Observation, ObservationCustomField
+        from sqlalchemy.orm import joinedload
+
+        # Load observation with all needed relationships eagerly loaded
+        observation = session.query(Observation).filter_by(
+            id=observation_id
+        ).options(
+            joinedload(Observation.custom_fields).joinedload(ObservationCustomField.field),
+            joinedload(Observation.tags),
+            joinedload(Observation.photos)
+        ).first()
+
+        if not observation:
+            return None
+
+        # Extract all data while session is active
+        result = {
+            'id': observation.id,
+            'entry_name': observation.entry_name,
+            'observation_date': observation.observation_date,
+            'location': observation.location,
+            'latitude': observation.latitude,
+            'longitude': observation.longitude,
+            'tier': observation.tier,
+            'notes': observation.notes,
+            'lifelist_id': observation.lifelist_id,
+
+            # Extract relationships data too
+            'custom_fields': [
+                {
+                    'field_id': cf.field_id,
+                    'field_name': cf.field.field_name,
+                    'value': cf.value
+                }
+                for cf in observation.custom_fields
+            ],
+
+            'tags': [
+                {
+                    'id': tag.id,
+                    'name': tag.name,
+                    'category': tag.category
+                }
+                for tag in observation.tags
+            ],
+
+            'photos': [
+                {
+                    'id': photo.id,
+                    'path': photo.file_path,
+                    'is_primary': photo.is_primary
+                }
+                for photo in observation.photos
+            ]
+        }
+
+        # For astronomy lifelists, also load equipment
+        if self.check_if_astronomy_lifelist():
+            from db.repositories import EquipmentRepository
+            equipment = EquipmentRepository.get_observation_equipment(session, observation_id)
+            result['equipment'] = [
+                {
+                    'id': eq.id,
+                    'name': eq.name,
+                    'type': eq.type
+                }
+                for eq in equipment
+            ]
+
+        return result
+
+    def _populate_form_from_data(self, data, is_astronomy):
+        """Populate form fields from extracted observation data"""
+        # Basic fields
+        self.entry_name_edit.setText(data['entry_name'])
+
+        if data['observation_date']:
+            date = QDateTime.fromString(
+                data['observation_date'].strftime("%Y-%m-%d %H:%M:%S"),
+                "yyyy-MM-dd hh:mm:ss"
+            )
+            self.date_edit.setDateTime(date)
+
+        if data['location']:
+            self.location_edit.setText(data['location'])
+
+        # Handle different coordinate types based on lifelist type
+        if is_astronomy:
+            # For astronomy, get RA/Dec from custom fields
+            for field in data['custom_fields']:
+                if field['field_name'] == "Right Ascension":
+                    self.ra_edit.setText(field['value'] or "")
+                elif field['field_name'] == "Declination":
+                    self.dec_edit.setText(field['value'] or "")
+        else:
+            # For regular lifelists, use lat/lon
+            if data['latitude'] is not None:
+                self.latitude_edit.setText(str(data['latitude']))
+
+            if data['longitude'] is not None:
+                self.longitude_edit.setText(str(data['longitude']))
+
+        # Tier
+        if data['tier']:
+            index = self.tier_combo.findText(data['tier'])
+            if index >= 0:
+                self.tier_combo.setCurrentIndex(index)
+
+        # Notes
+        if data['notes']:
+            self.notes_edit.setText(data['notes'])
+
+        # Custom fields
+        for field in data['custom_fields']:
+            field_id = field['field_id']
+            if field_id in self.custom_field_widgets:
+                widget = self.custom_field_widgets[field_id]
+                value = field['value']
+
+                if isinstance(widget, QLineEdit):
+                    widget.setText(value or "")
+                elif isinstance(widget, QDateEdit) and value:
+                    try:
+                        date = QDate.fromString(value, "yyyy-MM-dd")
+                        widget.setDate(date)
+                    except Exception:
+                        pass
+                elif isinstance(widget, QComboBox) and value:
+                    index = widget.findText(value)
+                    if index >= 0:
+                        widget.setCurrentIndex(index)
+                elif isinstance(widget, QCheckBox):
+                    widget.setChecked(value == "1")
+
+        # Tags - extract to simple tuples
+        self.current_tags = [(tag['name'], tag['category']) for tag in data['tags']]
+        self._update_tags_display()
+
+        # Photos - extract needed info
+        self.photos = data['photos']
+        self._update_photos_display()
+
+        # Equipment for astronomy
+        if is_astronomy and 'equipment' in data:
+            self.selected_equipment_ids = [eq['id'] for eq in data['equipment']]
+
+            if hasattr(self, 'equipment_display'):
+                if self.selected_equipment_ids:
+                    equipment_list = [eq['name'] for eq in data['equipment']]
+                    self.equipment_display.setText(", ".join(equipment_list))
+                else:
+                    self.equipment_display.setText("No equipment selected")
 
     def _update_field_labels(self):
         """Update field labels with correct terminology"""
@@ -521,80 +836,6 @@ class ObservationForm(QWidget):
                 pass
         return options
 
-    def _load_observation_data(self, session, observation_id):
-        """Load data for an existing observation"""
-        # Get the observation
-        from db.models import Observation
-        observation = session.query(Observation).filter_by(
-            id=observation_id
-        ).first()
-
-        if not observation:
-            QMessageBox.warning(self, "Error", "Observation not found")
-            return
-
-        # Fill basic fields
-        self.entry_name_edit.setText(observation.entry_name)
-
-        if observation.observation_date:
-            date = QDate.fromString(observation.observation_date.strftime("%Y-%m-%d"), "yyyy-MM-dd")
-            self.date_edit.setDate(date)
-
-        if observation.location:
-            self.location_edit.setText(observation.location)
-
-        if observation.latitude is not None:
-            self.latitude_edit.setText(str(observation.latitude))
-
-        if observation.longitude is not None:
-            self.longitude_edit.setText(str(observation.longitude))
-
-        if observation.tier:
-            index = self.tier_combo.findText(observation.tier)
-            if index >= 0:
-                self.tier_combo.setCurrentIndex(index)
-
-        if observation.notes:
-            self.notes_edit.setText(observation.notes)
-
-        # Fill custom field values
-        for field_value in observation.custom_fields:
-            field_id = field_value.field_id
-            if field_id in self.custom_field_widgets:
-                widget = self.custom_field_widgets[field_id]
-                value = field_value.value
-
-                if isinstance(widget, QLineEdit):
-                    widget.setText(value or "")
-                elif isinstance(widget, QDateEdit) and value:
-                    try:
-                        date = QDate.fromString(value, "yyyy-MM-dd")
-                        widget.setDate(date)
-                    except Exception:
-                        pass
-                elif isinstance(widget, QComboBox) and value:
-                    index = widget.findText(value)
-                    if index >= 0:
-                        widget.setCurrentIndex(index)
-                elif isinstance(widget, QCheckBox):
-                    widget.setChecked(value == "1")
-
-        # Load tags
-        for tag in observation.tags:
-            self.current_tags.append((tag.name, tag.category))
-
-        self._update_tags_display()
-
-        # Load photos
-        for photo in observation.photos:
-            self.photos.append({
-                "id": photo.id,
-                "path": photo.file_path,
-                "is_primary": photo.is_primary
-            })
-
-        self._update_photos_display()
-
     def _add_tag(self):
         """Add a tag to the current observation"""
         tag_name = self.tag_edit.text().strip()
@@ -687,7 +928,7 @@ class ObservationForm(QWidget):
             self,
             "Select Photos",
             "",
-            "Images (*.png *.jpg *.jpeg *.bmp *.gif)"
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.fits *.fit)"
         )
 
         if not file_paths:
@@ -725,7 +966,8 @@ class ObservationForm(QWidget):
     def _auto_populate_coordinates(self):
         """Auto-populate observation coordinates from photos if available"""
         # Check if observation coordinates are already set
-        if self.latitude_edit.text().strip() and self.longitude_edit.text().strip():
+        if (hasattr(self, 'latitude_edit') and hasattr(self, 'longitude_edit') and
+                self.latitude_edit.text().strip() and self.longitude_edit.text().strip()):
             return
 
         # Find first photo with EXIF coordinates
@@ -743,8 +985,10 @@ class ObservationForm(QWidget):
                 )
 
                 if reply == QMessageBox.Yes:
-                    self.latitude_edit.setText(str(photo["latitude"]))
-                    self.longitude_edit.setText(str(photo["longitude"]))
+                    # For regular observations, use lat/lon
+                    if hasattr(self, 'latitude_edit') and hasattr(self, 'longitude_edit'):
+                        self.latitude_edit.setText(str(photo["latitude"]))
+                        self.longitude_edit.setText(str(photo["longitude"]))
 
                 break  # Only ask for the first photo with coordinates
 
@@ -856,8 +1100,10 @@ class ObservationForm(QWidget):
                 )
 
                 if reply == QMessageBox.Yes:
-                    self.latitude_edit.setText(str(photo["latitude"]))
-                    self.longitude_edit.setText(str(photo["longitude"]))
+                    # For regular lifelists, update the earth coordinates
+                    if not self.check_if_astronomy_lifelist():
+                        self.latitude_edit.setText(str(photo["latitude"]))
+                        self.longitude_edit.setText(str(photo["longitude"]))
 
     def _remove_photo(self, index):
         """Remove a photo"""
@@ -869,6 +1115,17 @@ class ObservationForm(QWidget):
             if was_primary and self.photos:
                 self.photos[0]["is_primary"] = True
 
+            self._update_photos_display()
+
+    def _rotate_photo(self, index, angle):
+        """Rotate a photo by the given angle in degrees"""
+        if 0 <= index < len(self.photos):
+            # Update rotation value (accumulate rotations)
+            current_rotation = self.photos[index].get("rotation", 0)
+            new_rotation = (current_rotation + angle) % 360
+            self.photos[index]["rotation"] = new_rotation
+
+            # Update display
             self._update_photos_display()
 
     def _cancel(self):
@@ -884,31 +1141,37 @@ class ObservationForm(QWidget):
             return
 
         # Collect data
-        date_str = self.date_edit.date().toString("yyyy-MM-dd")
-        observation_date = datetime.strptime(date_str, "%Y-%m-%d") if date_str else None
+        date_str = self.date_edit.dateTime().toString("yyyy-MM-dd hh:mm:ss")
+        observation_date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S") if date_str else None
 
         location = self.location_edit.text().strip() or None
 
-        latitude = self.latitude_edit.text().strip() or None
-        if latitude:
-            try:
-                latitude = float(latitude)
-            except ValueError:
-                QMessageBox.warning(self, "Error", "Latitude must be a number")
-                return
+        # Get coordinates based on lifelist type
+        latitude = longitude = None
+        is_astronomy = self.check_if_astronomy_lifelist()
 
-        longitude = self.longitude_edit.text().strip() or None
-        if longitude:
-            try:
-                longitude = float(longitude)
-            except ValueError:
-                QMessageBox.warning(self, "Error", "Longitude must be a number")
-                return
+        if not is_astronomy:
+            # For regular lifelists, get latitude/longitude
+            latitude = self.latitude_edit.text().strip() or None
+            if latitude:
+                try:
+                    latitude = float(latitude)
+                except ValueError:
+                    QMessageBox.warning(self, "Error", "Latitude must be a number")
+                    return
+
+            longitude = self.longitude_edit.text().strip() or None
+            if longitude:
+                try:
+                    longitude = float(longitude)
+                except ValueError:
+                    QMessageBox.warning(self, "Error", "Longitude must be a number")
+                    return
 
         tier = self.tier_combo.currentText() or None
         notes = self.notes_edit.toPlainText().strip() or None
 
-        # Save to database
+        # Use a fresh session for saving
         with self.db_manager.session_scope() as session:
             from db.models import Observation
 
@@ -954,6 +1217,15 @@ class ObservationForm(QWidget):
             # Save photos
             self._save_photos(session, observation)
 
+            # Save equipment if astronomy lifelist
+            if is_astronomy and hasattr(self, 'selected_equipment_ids'):
+                from db.repositories import EquipmentRepository
+                EquipmentRepository.set_observation_equipment(
+                    session,
+                    observation.id,
+                    self.selected_equipment_ids
+                )
+
             # Commit changes
             session.commit()
 
@@ -983,6 +1255,32 @@ class ObservationForm(QWidget):
             if value:
                 field_values[field_id] = value
 
+        # For astronomy lifelists, also save RA/Dec from the dedicated fields
+        if self.check_if_astronomy_lifelist():
+            from db.models import CustomField
+
+            # Find the RA and Dec fields
+            ra_field = session.query(CustomField).filter_by(
+                lifelist_id=self.current_lifelist_id,
+                field_name="Right Ascension"
+            ).first()
+
+            dec_field = session.query(CustomField).filter_by(
+                lifelist_id=self.current_lifelist_id,
+                field_name="Declination"
+            ).first()
+
+            # Save RA/Dec if fields exist
+            if ra_field and hasattr(self, 'ra_edit'):
+                ra_value = self.ra_edit.text().strip()
+                if ra_value:
+                    field_values[ra_field.id] = ra_value
+
+            if dec_field and hasattr(self, 'dec_edit'):
+                dec_value = self.dec_edit.text().strip()
+                if dec_value:
+                    field_values[dec_field.id] = dec_value
+
         # Use repository to save custom field values
         from db.repositories import ObservationRepository
         ObservationRepository.set_observation_custom_fields(session, observation.id, field_values)
@@ -1009,17 +1307,6 @@ class ObservationForm(QWidget):
 
             # Add to observation
             observation.tags.append(tag)
-
-    def _rotate_photo(self, index, angle):
-        """Rotate a photo by the given angle in degrees"""
-        if 0 <= index < len(self.photos):
-            # Update rotation value (accumulate rotations)
-            current_rotation = self.photos[index].get("rotation", 0)
-            new_rotation = (current_rotation + angle) % 360
-            self.photos[index]["rotation"] = new_rotation
-
-            # Update display
-            self._update_photos_display()
 
     def _save_photos(self, session, observation):
         """Save observation photos"""
@@ -1066,17 +1353,35 @@ class ObservationForm(QWidget):
                         self._apply_rotation_to_stored_photo(photo, rotation, session)
 
             # Check if this is an existing photo by path
-            elif self.current_observation_id and any(p.file_path == path for p in existing_photos):
-                # Existing photo by path - update primary flag if needed
-                photo = next(p for p in existing_photos if p.file_path == path)
-                if photo.is_primary != photo_data.get("is_primary", False):
-                    PhotoRepository.set_primary_photo(session, photo.id)
+            elif self.current_observation_id:
+                # Get existing photos again in case of session expiry
+                existing_photos = PhotoRepository.get_observation_photos(session, observation.id)
+                photo_with_path = next((p for p in existing_photos if p.file_path == path), None)
 
-                # Apply rotation if needed
-                if rotation != 0:
-                    self._apply_rotation_to_stored_photo(photo, rotation, session)
+                if photo_with_path:
+                    # Existing photo by path - update primary flag if needed
+                    if photo_with_path.is_primary != photo_data.get("is_primary", False):
+                        PhotoRepository.set_primary_photo(session, photo_with_path.id)
+
+                    # Apply rotation if needed
+                    if rotation != 0:
+                        self._apply_rotation_to_stored_photo(photo_with_path, rotation, session)
+                else:
+                    # New photo - store it
+                    if rotation != 0:
+                        # Rotate the image before storing
+                        rotated_path = self._create_rotated_copy(path, rotation)
+                        if rotated_path:
+                            path = rotated_path
+
+                    self.photo_manager.store_photo(
+                        session,
+                        observation.id,
+                        path,
+                        is_primary=photo_data.get("is_primary", False)
+                    )
             else:
-                # New photo - store it
+                # New photo for new observation - store it
                 if rotation != 0:
                     # Rotate the image before storing
                     rotated_path = self._create_rotated_copy(path, rotation)
