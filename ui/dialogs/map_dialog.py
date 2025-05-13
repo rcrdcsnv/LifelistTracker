@@ -80,8 +80,8 @@ class MapDialog(BaseMapDialog):
         """Get map configuration for observation map"""
         # Calculate center from observations
         if self.observations:
-            valid_coords = [(obs.latitude, obs.longitude) for obs in self.observations
-                            if obs.latitude is not None and obs.longitude is not None]
+            valid_coords = [(obs['latitude'], obs['longitude']) for obs in self.observations
+                            if obs['latitude'] is not None and obs['longitude'] is not None]
 
             if valid_coords:
                 lat_sum = sum(lat for lat, _ in valid_coords)
@@ -147,15 +147,15 @@ class MapDialog(BaseMapDialog):
         # Generate markers data
         markers = []
         for obs in self.observations:
-            if obs.latitude is not None and obs.longitude is not None:
+            if obs['latitude'] is not None and obs['longitude'] is not None:
                 marker = {
-                    "lat": obs.latitude,
-                    "lon": obs.longitude,
-                    "title": obs.entry_name,
-                    "popup": f"<strong>{obs.entry_name}</strong><br>" +
-                             f"Date: {obs.observation_date.strftime('%Y-%m-%d') if obs.observation_date else 'Unknown'}<br>" +
-                             f"Location: {obs.location or 'Unknown'}<br>" +
-                             f"Tier: {obs.tier or 'Unknown'}"
+                    "lat": obs['latitude'],
+                    "lon": obs['longitude'],
+                    "title": obs['entry_name'],
+                    "popup": f"<strong>{obs['entry_name']}</strong><br>" +
+                             f"Date: {obs['observation_date'].strftime('%Y-%m-%d') if obs['observation_date'] else 'Unknown'}<br>" +
+                             f"Location: {obs['location'] or 'Unknown'}<br>" +
+                             f"Tier: {obs['tier'] or 'Unknown'}"
                 }
                 markers.append(marker)
 
@@ -250,8 +250,8 @@ class MapDialog(BaseMapDialog):
         with self.db_manager.session_scope() as session:
             from db.repositories import ObservationRepository
 
-            # Get observations with coordinates
-            self.observations = ObservationRepository.get_observations_with_coordinates(
+            # Get observations with coordinates as DTOs (dictionaries)
+            self.observations = ObservationRepository.get_observations_with_coordinates_for_display(
                 session, self.lifelist_id, tier=tier, entry_name=entry
             )
 

@@ -301,69 +301,100 @@ class EquipmentManagerDialog(QDialog):
         layout.addLayout(buttons_layout)
 
     def _load_equipment(self):
-        """Load equipment data"""
+        """Load equipment data using repository pattern"""
         with self.db_manager.session_scope() as session:
             from db.repositories import EquipmentRepository
 
-            # Get all equipment
-            all_equipment = EquipmentRepository.get_all_equipment(session)
+            # Get all equipment as dictionaries
+            all_equipment = EquipmentRepository.get_all_equipment_for_display(session)
 
             # Populate type filter
             self.type_filter.clear()
             self.type_filter.addItem("All Types")
 
-            equipment_types = sorted(set(e.type for e in all_equipment if e.type))
+            equipment_types = sorted(set(e['type'] for e in all_equipment if e['type']))
             self.type_filter.addItems(equipment_types)
 
             # Get selected equipment for observation if applicable
             if self.observation_id:
-                self.selected_equipment = EquipmentRepository.get_observation_equipment(session, self.observation_id)
-                self.selected_equipment = [e.id for e in self.selected_equipment]
+                equipment_data = EquipmentRepository.get_observation_equipment_for_display(
+                    session, self.observation_id
+                )
+                self.selected_equipment = [e['id'] for e in equipment_data]
 
             # Display equipment
             self._populate_table(all_equipment)
 
     def _populate_table(self, equipment_list):
-        """Populate the equipment table"""
+        """Populate the equipment table with dictionaries instead of ORM objects"""
         self.equipment_table.setRowCount(0)
 
-        for row, equipment in enumerate(equipment_list):
+        # Convert to dictionaries if equipment_list contains ORM objects
+        equipment_data = []
+        for equipment in equipment_list:
+            if hasattr(equipment, '__dict__'):
+                # It's an ORM object, convert to dict
+                data = {
+                    'id': equipment.id,
+                    'name': equipment.name,
+                    'type': equipment.type or "",
+                    'aperture': equipment.aperture,
+                    'focal_length': equipment.focal_length,
+                    'focal_ratio': equipment.focal_ratio,
+                    'sensor_type': equipment.sensor_type,
+                    'pixel_size': equipment.pixel_size,
+                    'resolution': equipment.resolution,
+                    'details': equipment.details or "",
+                    'purchase_date': equipment.purchase_date,
+                    'notes': equipment.notes or ""
+                }
+                equipment_data.append(data)
+            else:
+                # Already a dict
+                equipment_data.append(equipment)
+
+        for row, equipment in enumerate(equipment_data):
             self.equipment_table.insertRow(row)
 
             # Set data
-            name_item = QTableWidgetItem(equipment.name)
-            name_item.setData(Qt.UserRole, equipment.id)
+            name_item = QTableWidgetItem(equipment['name'])
+            name_item.setData(Qt.UserRole, equipment['id'])
             self.equipment_table.setItem(row, 0, name_item)
 
-            self.equipment_table.setItem(row, 1, QTableWidgetItem(equipment.type or ""))
+            self.equipment_table.setItem(row, 1, QTableWidgetItem(equipment['type']))
 
             # Create details text based on equipment type
             details = ""
-            if equipment.type == "Telescope":
-                if equipment.aperture:
-                    details += f"{equipment.aperture}mm aperture, "
-                if equipment.focal_length:
-                    details += f"{equipment.focal_length}mm FL, "
-                if equipment.focal_ratio:
-                    details += f"f/{equipment.focal_ratio}"
-            elif equipment.type == "Camera":
-                if equipment.sensor_type:
-                    details += f"{equipment.sensor_type}, "
-                if equipment.resolution:
-                    details += f"{equipment.resolution}, "
-                if equipment.pixel_size:
-                    details += f"{equipment.pixel_size}µm pixels"
+            if equipment['type'] == "Telescope":
+                if equipment['aperture']:
+                    details += f"{equipment['aperture']}mm aperture, "
+                if equipment['focal_length']:
+                    details += f"{equipment['focal_length']}mm FL, "
+                if equipment['focal_ratio']:
+                    details += f"f/{equipment['focal_ratio']}"
+            elif equipment['type'] == "Camera":
+                if equipment['sensor_type']:
+                    details += f"{equipment['sensor_type']}, "
+                if equipment['resolution']:
+                    details += f"{equipment['resolution']}, "
+                if equipment['pixel_size']:
+                    details += f"{equipment['pixel_size']}µm pixels"
             else:
-                details = equipment.details or ""
+                details = equipment['details'] or ""
 
             self.equipment_table.setItem(row, 2, QTableWidgetItem(details.strip(", ")))
 
             # Purchase date
-            date_text = equipment.purchase_date.strftime("%Y-%m-%d") if equipment.purchase_date else ""
+            date_text = ""
+            if equipment['purchase_date']:
+                if hasattr(equipment['purchase_date'], 'strftime'):
+                    date_text = equipment['purchase_date'].strftime("%Y-%m-%d")
+                else:
+                    date_text = str(equipment['purchase_date'])
             self.equipment_table.setItem(row, 3, QTableWidgetItem(date_text))
 
             # Notes
-            self.equipment_table.setItem(row, 4, QTableWidgetItem(equipment.notes or ""))
+            self.equipment_table.setItem(row, 4, QTableWidgetItem(equipment['notes']))
 
             # Action buttons container
             btn_widget = QWidget()

@@ -519,27 +519,47 @@ class ClassificationManagerDialog(QDialog):
             from db.repositories import ClassificationRepository
 
             # Get classifications for this lifelist
-            self.classifications = ClassificationRepository.get_classifications(session, self.lifelist_id)
+            classifications = ClassificationRepository.get_classifications(session, self.lifelist_id)
 
             # Update classifications list
             self.classifications_list.clear()
             self.classification_combo.clear()
 
-            for classification in self.classifications:
-                item = QListWidgetItem(classification.name)
-                item.setData(Qt.UserRole, classification.id)
+            # Create a list to store classification data
+            classification_data = []
+            for classification in classifications:
+                classification_data.append({
+                    'id': classification.id,
+                    'name': classification.name,
+                    'is_active': classification.is_active,
+                    'version': classification.version,
+                    'source': classification.source,
+                    'description': classification.description,
+                    'created_at': classification.created_at
+                })
 
                 if classification.is_active:
+                    self.current_classification = {
+                        'id': classification.id,
+                        'name': classification.name,
+                        'is_active': classification.is_active
+                    }
+
+            # Now work with the extracted data (not ORM objects)
+            for data in classification_data:
+                item = QListWidgetItem(data['name'])
+                item.setData(Qt.UserRole, data['id'])
+
+                if data['is_active']:
                     item.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
-                    item.setText(f"{classification.name} (Active)")
-                    self.current_classification = classification
+                    item.setText(f"{data['name']} (Active)")
 
                 self.classifications_list.addItem(item)
-                self.classification_combo.addItem(classification.name, classification.id)
+                self.classification_combo.addItem(data['name'], data['id'])
 
             # Select active classification in combo
             if self.current_classification:
-                index = self.classification_combo.findData(self.current_classification.id)
+                index = self.classification_combo.findData(self.current_classification['id'])
                 if index >= 0:
                     self.classification_combo.setCurrentIndex(index)
 
@@ -703,7 +723,7 @@ class ClassificationManagerDialog(QDialog):
         with self.db_manager.session_scope() as session:
             from db.repositories import ClassificationRepository
 
-            if success := ClassificationRepository.set_active_classification(
+            if ClassificationRepository.set_active_classification(
                 session, self.lifelist_id, classification_id
             ):
                 session.commit()
@@ -753,9 +773,9 @@ class ClassificationManagerDialog(QDialog):
         with self.db_manager.session_scope() as session:
             from db.repositories import ClassificationRepository
 
-            success = ClassificationRepository.delete_classification(session, classification_id)
-
-            if success:
+            if ClassificationRepository.delete_classification(
+                session, classification_id
+            ):
                 session.commit()
 
                 # Reload classifications

@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from .models import (Lifelist, LifelistType, LifelistTier, LifelistTypeTier,
                      Observation, Photo, Tag, CustomField, ObservationCustomField,
                      Classification, ClassificationEntry, TagHierarchy, Equipment, ObservationEquipment)
+import json
 
 
 class LifelistRepository:
@@ -105,11 +106,12 @@ class LifelistRepository:
     @staticmethod
     def get_lifelist_tiers(session: Session, lifelist_id: int) -> List[str]:
         """Get tiers for a lifelist without including special tiers like 'Undetermined'"""
-        tiers = session.query(LifelistTier).filter(
-            LifelistTier.lifelist_id == lifelist_id
-        ).order_by(LifelistTier.tier_order).all()
-
-        if tiers:
+        if (
+            tiers := session.query(LifelistTier)
+            .filter(LifelistTier.lifelist_id == lifelist_id)
+            .order_by(LifelistTier.tier_order)
+            .all()
+        ):
             return [tier.tier_name for tier in tiers]
 
         # If no custom tiers defined, get default tiers based on lifelist type
@@ -247,17 +249,18 @@ class ObservationRepository:
 
         # Convert to plain dictionaries (detached from session)
         observations = []
-        for row in results:
-            observations.append({
+        observations.extend(
+            {
                 'id': row.id,
                 'entry_name': row.entry_name,
                 'date': row.observation_date,
                 'location': row.location,
                 'tier': row.tier,
                 'lifelist_id': row.lifelist_id,
-                'photo_id': None  # Populated separately if needed
-            })
-
+                'photo_id': None,  # Populated separately if needed
+            }
+            for row in results
+        )
         return observations
 
     @staticmethod
@@ -324,10 +327,10 @@ class ObservationRepository:
         }
 
     @staticmethod
-    def get_observations_with_coordinates(session: Session, lifelist_id: int,
-                                          tier: Optional[str] = None,
-                                          entry_name: Optional[str] = None) -> List[Observation]:
-        """Get observations that have coordinates"""
+    def get_observations_with_coordinates_for_display(session: Session, lifelist_id: int,
+                                                      tier: Optional[str] = None,
+                                                      entry_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get observations with coordinates as dictionaries"""
         query = session.query(Observation).filter(
             Observation.lifelist_id == lifelist_id,
             Observation.latitude.isnot(None),
@@ -341,7 +344,62 @@ class ObservationRepository:
         if entry_name:
             query = query.filter(Observation.entry_name == entry_name)
 
-        return query.all()
+        # Extract data while session is active
+        result = []
+        result.extend(
+            {
+                'id': obs.id,
+                'entry_name': obs.entry_name,
+                'observation_date': obs.observation_date,
+                'location': obs.location,
+                'latitude': obs.latitude,
+                'longitude': obs.longitude,
+                'tier': obs.tier,
+                'notes': obs.notes,
+                'lifelist_id': obs.lifelist_id,
+            }
+            for obs in query.all()
+        )
+        return result
+
+    @staticmethod
+    def get_observations_with_custom_fields(session: Session, lifelist_id: int) -> List[Dict[str, Any]]:
+        """Get observations with their custom fields as dictionaries"""
+        from sqlalchemy.orm import joinedload
+
+        observations = session.query(Observation).filter(
+            Observation.lifelist_id == lifelist_id
+        ).options(
+            joinedload(Observation.custom_fields).joinedload(ObservationCustomField.field)
+        ).all()
+
+        result = []
+        for obs in observations:
+            # Extract basic observation data
+            obs_data = {
+                'id': obs.id,
+                'entry_name': obs.entry_name,
+                'observation_date': obs.observation_date,
+                'location': obs.location,
+                'latitude': obs.latitude,
+                'longitude': obs.longitude,
+                'tier': obs.tier,
+                'notes': obs.notes,
+                'lifelist_id': obs.lifelist_id,
+                'custom_fields': []
+            }
+
+            # Extract custom fields
+            for cf in obs.custom_fields:
+                obs_data['custom_fields'].append({
+                    'field_id': cf.field_id,
+                    'field_name': cf.field.field_name,
+                    'value': cf.value
+                })
+
+            result.append(obs_data)
+
+        return result
 
     @staticmethod
     def get_unique_entries(session: Session, lifelist_id: int) -> List[str]:
@@ -515,53 +573,56 @@ class ObservationRepository:
         from sqlalchemy.orm import joinedload
 
         # Load observation with all relationships eagerly loaded
-        observation = session.query(Observation).filter_by(
-            id=observation_id
-        ).options(
-            joinedload(Observation.photos),
-            joinedload(Observation.custom_fields).joinedload(ObservationCustomField.field),
-            joinedload(Observation.tags)
-        ).first()
-
-        if not observation:
+        if (
+            observation := session.query(Observation)
+            .filter_by(id=observation_id)
+            .options(
+                joinedload(Observation.photos),
+                joinedload(Observation.custom_fields).joinedload(
+                    ObservationCustomField.field
+                ),
+                joinedload(Observation.tags),
+            )
+            .first()
+        ):
+            # Extract all needed data while session is still active
+            return {
+                'id': observation.id,
+                'entry_name': observation.entry_name,
+                'observation_date': observation.observation_date,
+                'location': observation.location,
+                'latitude': observation.latitude,
+                'longitude': observation.longitude,
+                'tier': observation.tier,
+                'notes': observation.notes,
+                'lifelist_id': observation.lifelist_id,
+                'custom_fields': [
+                    {
+                        'field_id': cf.field_id,
+                        'field_name': cf.field.field_name,
+                        'value': cf.value
+                    }
+                    for cf in observation.custom_fields
+                ],
+                'tags': [
+                    {
+                        'id': tag.id,
+                        'name': tag.name,
+                        'category': tag.category
+                    }
+                    for tag in observation.tags
+                ],
+                'photos': [
+                    {
+                        'id': photo.id,
+                        'file_path': photo.file_path,
+                        'is_primary': photo.is_primary
+                    }
+                    for photo in observation.photos
+                ]
+            }
+        else:
             return None
-
-        # Extract all needed data while session is still active
-        return {
-            'id': observation.id,
-            'entry_name': observation.entry_name,
-            'observation_date': observation.observation_date,
-            'location': observation.location,
-            'latitude': observation.latitude,
-            'longitude': observation.longitude,
-            'tier': observation.tier,
-            'notes': observation.notes,
-            'lifelist_id': observation.lifelist_id,
-            'custom_fields': [
-                {
-                    'field_id': cf.field_id,
-                    'field_name': cf.field.field_name,
-                    'value': cf.value
-                }
-                for cf in observation.custom_fields
-            ],
-            'tags': [
-                {
-                    'id': tag.id,
-                    'name': tag.name,
-                    'category': tag.category
-                }
-                for tag in observation.tags
-            ],
-            'photos': [
-                {
-                    'id': photo.id,
-                    'file_path': photo.file_path,
-                    'is_primary': photo.is_primary
-                }
-                for photo in observation.photos
-            ]
-        }
 
 
 class PhotoRepository:
@@ -605,6 +666,77 @@ class PhotoRepository:
         query = query.order_by(Photo.is_primary.desc())
 
         return query.all()
+
+    @staticmethod
+    def get_observation_photos_for_display(session: Session, observation_id: int) -> List[Dict[str, Any]]:
+        """Get photos for an observation as dictionaries"""
+        photos = session.query(Photo).filter(
+            Photo.observation_id == observation_id
+        ).order_by(Photo.is_primary.desc()).all()
+
+        # Convert to dictionaries
+        result = []
+        result.extend(
+            {
+                'id': photo.id,
+                'file_path': photo.file_path,
+                'is_primary': photo.is_primary,
+                'latitude': photo.latitude,
+                'longitude': photo.longitude,
+                'taken_date': photo.taken_date,
+                'width': photo.width,
+                'height': photo.height,
+            }
+            for photo in photos
+        )
+        return result
+
+    @staticmethod
+    def delete_photo_by_id(session: Session, photo_id: int) -> bool:
+        """Delete a photo by ID"""
+        photo = session.query(Photo).filter_by(id=photo_id).first()
+        if not photo:
+            return False
+
+        # Use photo manager to delete file
+        from services.photo_manager import PhotoManager
+        photo_manager = PhotoManager()
+        return photo_manager.delete_photo(session, photo)
+
+    @staticmethod
+    def update_photo(session: Session, photo_id: int, is_primary: bool = None) -> bool:
+        """Update photo properties"""
+        photo = session.query(Photo).filter_by(id=photo_id).first()
+        if not photo:
+            return False
+
+        # Update primary status if specified
+        if is_primary is not None and photo.is_primary != is_primary:
+            if is_primary:
+                # Reset other primary photos for this observation's entry
+                observation = session.query(Observation).filter_by(
+                    id=photo.observation_id
+                ).first()
+
+                if observation:
+                    # Get all observations for this entry
+                    entry_observations = session.query(Observation.id).filter(
+                        Observation.lifelist_id == observation.lifelist_id,
+                        Observation.entry_name == observation.entry_name
+                    ).all()
+
+                    obs_ids = [obs.id for obs in entry_observations]
+
+                    # Reset primary flag on all photos for this entry
+                    session.query(Photo).filter(
+                        Photo.observation_id.in_(obs_ids),
+                        Photo.id != photo.id
+                    ).update({"is_primary": False}, synchronize_session='fetch')
+
+            # Set primary status
+            photo.is_primary = is_primary
+
+        return True
 
     @staticmethod
     def create_photo(session: Session, observation_id: int, file_path: str,
@@ -722,6 +854,31 @@ class EquipmentRepository:
         return session.query(Equipment).order_by(Equipment.name).all()
 
     @staticmethod
+    def get_all_equipment_for_display(session: Session) -> List[Dict[str, Any]]:
+        """Get all equipment as dictionaries"""
+        equipment = session.query(Equipment).order_by(Equipment.name).all()
+
+        result = []
+        result.extend(
+            {
+                'id': eq.id,
+                'name': eq.name,
+                'type': eq.type,
+                'aperture': eq.aperture,
+                'focal_length': eq.focal_length,
+                'focal_ratio': eq.focal_ratio,
+                'sensor_type': eq.sensor_type,
+                'pixel_size': eq.pixel_size,
+                'resolution': eq.resolution,
+                'details': eq.details,
+                'purchase_date': eq.purchase_date,
+                'notes': eq.notes,
+            }
+            for eq in equipment
+        )
+        return result
+
+    @staticmethod
     def get_equipment_by_type(session: Session, equipment_type: str) -> List[Equipment]:
         """Get equipment by type"""
         return session.query(Equipment).filter(Equipment.type == equipment_type).order_by(Equipment.name).all()
@@ -824,6 +981,98 @@ class EquipmentRepository:
             print(f"Error setting observation equipment: {e}")
             return False
 
+    @staticmethod
+    def get_observation_equipment_for_display(session: Session, observation_id: int) -> List[Dict[str, Any]]:
+        """Get equipment for an observation as dictionaries"""
+        result = []
+
+        equipment_items = session.query(Equipment).join(
+            ObservationEquipment, ObservationEquipment.equipment_id == Equipment.id
+        ).filter(
+            ObservationEquipment.observation_id == observation_id
+        ).all()
+
+        result.extend(
+            {
+                'id': eq.id,
+                'name': eq.name,
+                'type': eq.type,
+                'aperture': eq.aperture,
+                'focal_length': eq.focal_length,
+                'focal_ratio': eq.focal_ratio,
+                'sensor_type': eq.sensor_type,
+                'pixel_size': eq.pixel_size,
+                'resolution': eq.resolution,
+                'details': eq.details,
+                'purchase_date': eq.purchase_date,
+                'notes': eq.notes,
+            }
+            for eq in equipment_items
+        )
+        return result
+
+
+class CustomFieldRepository:
+    """Repository for CustomField operations"""
+
+    @staticmethod
+    def get_custom_fields_by_lifelist(session: Session, lifelist_id: int) -> List[Dict[str, Any]]:
+        """Get custom fields for a lifelist as dictionaries"""
+        fields = session.query(CustomField).filter_by(
+            lifelist_id=lifelist_id
+        ).order_by(CustomField.display_order).all()
+
+        result = []
+        for field in fields:
+            # Convert field_options to Python object if it's a string
+            options = field.field_options
+            if isinstance(options, str):
+                try:
+                    options = json.loads(options)
+                except (json.JSONDecodeError, TypeError):
+                    options = None
+
+            result.append({
+                'id': field.id,
+                'lifelist_id': field.lifelist_id,
+                'field_name': field.field_name,
+                'field_type': field.field_type,
+                'field_options': options,
+                'is_required': field.is_required,
+                'display_order': field.display_order
+            })
+
+        return result
+
+    @staticmethod
+    def get_field_by_name(session: Session, lifelist_id: int, field_name: str) -> Optional[Dict[str, Any]]:
+        """Get a specific custom field by name"""
+        field = session.query(CustomField).filter_by(
+            lifelist_id=lifelist_id,
+            field_name=field_name
+        ).first()
+
+        if not field:
+            return None
+
+        # Convert field_options to Python object if it's a string
+        options = field.field_options
+        if isinstance(options, str):
+            try:
+                options = json.loads(options)
+            except (json.JSONDecodeError, TypeError):
+                options = None
+
+        return {
+            'id': field.id,
+            'lifelist_id': field.lifelist_id,
+            'field_name': field.field_name,
+            'field_type': field.field_type,
+            'field_options': options,
+            'is_required': field.is_required,
+            'display_order': field.display_order
+        }
+
 class TagRepository:
     """Repository for Tag operations"""
 
@@ -868,18 +1117,14 @@ class TagRepository:
             Observation.id == observation_id
         ).first()
 
-        if not observation:
-            return []
-
-        return observation.tags
+        return observation.tags if observation else []
 
     @staticmethod
     def create_tag(session: Session, name: str, category: Optional[str] = None) -> Optional[int]:
         """Create a new tag"""
         try:
             # Check if tag already exists
-            existing = session.query(Tag).filter(Tag.name == name).first()
-            if existing:
+            if existing := session.query(Tag).filter(Tag.name == name).first():
                 return existing.id
 
             # Create new tag
@@ -916,6 +1161,41 @@ class TagRepository:
         except Exception as e:
             print(f"Error updating tag: {e}")
             return False
+
+    @staticmethod
+    def update_observation_tags(session: Session, observation_id: int, tag_data: List[Dict[str, str]]) -> bool:
+        """Update an observation's tags using a DTO-based approach"""
+        # Get the observation
+        observation = session.query(Observation).filter_by(id=observation_id).first()
+        if not observation:
+            return False
+
+        # Clear existing tags
+        observation.tags = []
+
+        # Add new tags
+        for tag_info in tag_data:
+            name = tag_info.get("name")
+            category = tag_info.get("category")
+
+            if not name:
+                continue
+
+            # Find or create tag
+            tag = session.query(Tag).filter_by(name=name).first()
+
+            if not tag:
+                tag = Tag(
+                    name=name,
+                    category=category
+                )
+                session.add(tag)
+                session.flush()
+
+            # Add to observation
+            observation.tags.append(tag)
+
+        return True
 
     @staticmethod
     def delete_tag(session: Session, tag_id: int) -> bool:

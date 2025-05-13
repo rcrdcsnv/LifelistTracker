@@ -19,6 +19,11 @@ class SessionManager:
             method = getattr(repository_class, method_name)
             return method(session, *args, **kwargs)
 
+    def with_fresh_session(self, func):
+        """Execute a function with a fresh session and return its result."""
+        with self.list_session() as session:
+            return func(session)
+
     @contextmanager
     def batch_operation(self, chunk_size=100):
         """Context manager for operations that process data in batches.

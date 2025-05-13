@@ -63,18 +63,21 @@ class CelestialMapDialog(QDialog):
         with self.db_manager.session_scope() as session:
             from db.repositories import ObservationRepository
 
-            # Get all observations for this lifelist
-            all_observations = ObservationRepository.get_observations(session, self.lifelist_id)
+            # Get observations with custom fields using repository pattern
+            observations_with_fields = ObservationRepository.get_observations_with_custom_fields(
+                session, self.lifelist_id
+            )
 
-            # Filter for those with RA/Dec coordinates
-            for obs in all_observations:
+            # Extract data while session is active
+            self.observations = []
+            for obs in observations_with_fields:
                 # Look for Right Ascension and Declination in custom fields
                 ra = dec = None
-                for cf in obs.custom_fields:
-                    if cf.field.field_name == "Right Ascension":
-                        ra = cf.value
-                    elif cf.field.field_name == "Declination":
-                        dec = cf.value
+                for field in obs['custom_fields']:
+                    if field['field_name'] == "Right Ascension":
+                        ra = field['value']
+                    elif field['field_name'] == "Declination":
+                        dec = field['value']
 
                 if ra and dec:
                     try:
@@ -83,16 +86,16 @@ class CelestialMapDialog(QDialog):
 
                         # Add to list with key info
                         self.observations.append({
-                            'name': obs.entry_name,
+                            'name': obs['entry_name'],
                             'ra': coord.ra.degree,  # Store as degrees for plotting
                             'dec': coord.dec.degree,
-                            'tier': obs.tier
+                            'tier': obs['tier']
                         })
                     except Exception as e:
-                        print(f"Error parsing coordinates for {obs.entry_name}: {e}")
+                        print(f"Error parsing coordinates for {obs['entry_name']}: {e}")
 
-        # Update the map
-        self._update_map()
+            # Update the map
+            self._update_map()
 
     def _update_map(self):
         """Update the star map"""
