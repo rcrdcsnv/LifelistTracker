@@ -1,17 +1,17 @@
 # ui/dialogs/coordinate_picker.py
 
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QDialogButtonBox, QLineEdit, \
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QDialogButtonBox, QLineEdit, \
     QMessageBox, QGroupBox
-from PySide6.QtCore import Qt, QObject, Signal, Slot
+from PySide6.QtCore import Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QDoubleValidator
 from typing import Dict, Any
-from .base_map_dialog import BaseMapDialog
+from .base_map_dialog import BaseMapDialog, MapBridge
 
 
 # Create a bridge class for JavaScript-Python communication
-class CoordinateBridge(QObject):
-    """Bridge object to receive coordinates from JavaScript"""
+class CoordinateBridge(MapBridge):
+    """Extended bridge for coordinate picker"""
     coordinatesChanged = Signal(float, float)
 
     @Slot(float, float)
@@ -40,28 +40,25 @@ class CoordinatePickerDialog(BaseMapDialog):
     """Dialog for selecting coordinates from an interactive map"""
 
     def __init__(self, parent=None, initial_lat=None, initial_lon=None):
-        # Only use defaults if no coordinates are provided
+        # Init coordinates
         if initial_lat is not None and initial_lon is not None:
             self.selected_lat = initial_lat
             self.selected_lon = initial_lon
         else:
-            # Default to user's location or a reasonable fallback
-            self.selected_lat = 40.0
-            self.selected_lon = -95.0
+            self.selected_lat = 0.0
+            self.selected_lon = 0.0
 
-        self.lat_edit = None
-        self.lon_edit = None
-        self.update_map_btn = None
-
-        # Set up the bridge before creating the dialog
-        self.bridge = CoordinateBridge()
-        self.channel = QWebChannel()
-        self.channel.registerObject("coordBridge", self.bridge)
-
-        # Connect the bridge's signal to update coordinates
-        self.bridge.coordinatesChanged.connect(self._update_coordinates)
-
+        # Call parent constructor first
         super().__init__(parent, "Select Coordinates")
+
+        # Replace the bridge with our specialized version
+        self.coord_bridge = CoordinateBridge()
+        self.coord_bridge.coordinatesChanged.connect(self._update_coordinates)
+        self.coord_bridge.baseLayerChanged.connect(self._save_preferred_base_layer)
+
+        # Update the channel to use our bridge
+        self.channel = QWebChannel()
+        self.channel.registerObject("coordBridge", self.coord_bridge)
 
     def add_controls(self):
         """Add coordinate picker specific controls"""
@@ -123,12 +120,11 @@ class CoordinatePickerDialog(BaseMapDialog):
 
     def get_map_config(self) -> Dict[str, Any]:
         """Get map configuration for coordinate picker"""
-        config = {
+        return {
             'centerLat': self.selected_lat,
             'centerLon': self.selected_lon,
-            'zoom': 13  # Increased zoom for better detail
+            'zoom': 13,  # Increased zoom for better detail
         }
-        return config
 
     def get_custom_javascript(self) -> str:
         """Get custom JavaScript for coordinate picker"""
@@ -139,10 +135,10 @@ class CoordinatePickerDialog(BaseMapDialog):
         // Create custom marker icon
         const markerIcon = L.divIcon({
             className: 'custom-marker',
-            html: '<div style="background: #ff0000; border: 2px solid #fff; border-radius: 50%; width: 20px; height: 20px; box-shadow: 0 0 4px rgba(0,0,0,0.3);"></div>',
-            iconSize: [20, 20],
-            iconAnchor: [10, 20],
-            popupAnchor: [0, -20]
+            html: '<div style="background: #ff5050; border: 2px solid #fff; border-radius: 50%; width: 10px; height: 10px; box-shadow: 0 0 4px rgba(0,0,0,0.3);"></div>',
+            iconSize: [10, 10],
+            iconAnchor: [6, 6],
+            popupAnchor: [1, -6]
         });
 
         // Create marker
@@ -178,12 +174,17 @@ class CoordinatePickerDialog(BaseMapDialog):
         map.on('click', function(e) {
             const lat = e.latlng.lat;
             const lng = e.latlng.lng;
-
+        
             // Move marker to clicked location
             marker.setLatLng([lat, lng]);
-
+        
             // Update coordinate display
             updateCoordinateDisplay(lat, lng);
+            
+            // Send to Qt using the coordinate bridge
+            if (window.coordBridge) {
+                window.coordBridge.updateCoordinates(lat, lng);
+            }
         });
 
         // Handle coordinate updates from Qt
@@ -205,7 +206,7 @@ class CoordinatePickerDialog(BaseMapDialog):
         .coordinate-display {
             position: absolute;
             top: 10px;
-            right: 10px;
+            right: 50px;
             background: rgba(255, 255, 255, 0.9);
             padding: 10px;
             border: 1px solid #ccc;
@@ -215,7 +216,7 @@ class CoordinatePickerDialog(BaseMapDialog):
         }
         .map-help {
             position: absolute;
-            bottom: 10px;
+            bottom: 25px;
             left: 10px;
             background: rgba(255, 255, 255, 0.9);
             padding: 8px;

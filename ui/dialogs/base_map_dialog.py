@@ -1,11 +1,23 @@
 # ui/dialogs/base_map_dialog.py
+from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QMessageBox
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QUrl, Signal, QObject, Slot
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 import tempfile
 import os
 from typing import Dict, Any
+from config import Config
+
+
+class MapBridge(QObject):
+    """Bridge object for general map interactions"""
+    baseLayerChanged = Signal(str)
+
+    @Slot(str)
+    def onBaseLayerChanged(self, layer_name):
+        """Called when base layer changes in the map"""
+        self.baseLayerChanged.emit(layer_name)
 
 class BaseMapDialog(QDialog):
     """Base class for dialogs that use Leaflet maps"""
@@ -18,6 +30,14 @@ class BaseMapDialog(QDialog):
 
         self.temp_file_path = None
         self.map_view = None
+
+        # Set up bridge for map interactions
+        self.map_bridge = MapBridge()
+        self.map_bridge.baseLayerChanged.connect(self._save_preferred_base_layer)
+
+        # Create web channel
+        self.channel = QWebChannel()
+        self.channel.registerObject("mapBridge", self.map_bridge)
 
         self.setWindowTitle(title)
         self.setMinimumWidth(800)
@@ -60,7 +80,15 @@ class BaseMapDialog(QDialog):
             print("Failed to load map HTML")
             QMessageBox.warning(self, "Warning", "Failed to load map. Please try again.")
         else:
+            # Set up web channel
+            self.map_view.page().setWebChannel(self.channel)
             self.map_loaded.emit()
+
+    def _save_preferred_base_layer(self, layer_name):
+        """Save the preferred base layer to config"""
+        config = Config.load()
+        config.map.preferred_base_layer = layer_name
+        config.save()
 
     def create_and_load_map(self, html_content: str):
         """Create temporary HTML file and load it in the map view"""
@@ -115,6 +143,16 @@ class BaseMapDialog(QDialog):
                     z-index: 1000;
                     font-size: 18px;
                 }
+                /* Custom styling for layer control */
+                .leaflet-control-layers {
+                    border-radius: 7px !important;
+                    box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+                }
+                .leaflet-control-layers-toggle {
+                    width: 26px !important;
+                    height: 26px !important;
+                    background-size: 20px 20px;
+                }
                 {{custom_styles}}
             </style>
             <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -128,7 +166,7 @@ class BaseMapDialog(QDialog):
             <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
             <script>
                 // Global variables
-                let map, tileLayer;
+                let map, baseMaps, overlayMaps, layerControl, activeBaseLayer;
                 const loading = document.getElementById('loading');
 
                 // Initialize map when DOM is ready
@@ -158,20 +196,65 @@ class BaseMapDialog(QDialog):
                             zoomControl: true
                         });
 
-                        // Add OpenStreetMap tiles
-                        tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-                            maxZoom: 19,
-                            subdomains: ['a', 'b', 'c']
-                        });
+                        // Define multiple base map layers
+                        baseMaps = {
+                            "OpenStreetMap": L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                                maxZoom: 19,
+                                subdomains: ['a', 'b', 'c']
+                            }),
 
-                        tileLayer.addTo(map);
+                            "Satellite": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                                attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+                                maxZoom: 18
+                            }),
+
+                            "Terrain": L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+                                attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="http://viewfinderpanoramas.org">SRTM</a> | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)',
+                                maxZoom: 17
+                            }),
+
+                            "Dark": L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                                subdomains: 'abcd',
+                                maxZoom: 19
+                            }),
+
+                            "Light": L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                                subdomains: 'abcd',
+                                maxZoom: 19
+                            })
+                        };
+
+                        // Set default base layer from config
+                        activeBaseLayer = config.preferredBaseLayer || "OpenStreetMap";
+                        baseMaps[activeBaseLayer].addTo(map);
+
+                        // Add layer control - collapsed to a button
+                        overlayMaps = {}; // Will be populated by child classes if needed
+                        layerControl = L.control.layers(baseMaps, overlayMaps, {
+                            collapsed: true,  // This makes it collapse to a button
+                            position: 'topright'
+                        }).addTo(map);
+
+                        // Add scale control
+                        L.control.scale({imperial: false}).addTo(map);
 
                         // Hide loading message when tiles are loaded
-                        tileLayer.on('load', function() {
+                        baseMaps[activeBaseLayer].on('load', function() {
                             loading.style.display = 'none';
                             // Invalidate size to ensure proper centering
                             map.invalidateSize();
+                        });
+
+                        // Track active base layer changes
+                        map.on('baselayerchange', function(e) {
+                            activeBaseLayer = e.name;
+                            // Send the selected layer back to Python using the bridge
+                            if (window.mapBridge) {
+                                window.mapBridge.onBaseLayerChanged(activeBaseLayer);
+                            }
                         });
 
                         // Allow subclasses to initialize their specific features
@@ -196,8 +279,17 @@ class BaseMapDialog(QDialog):
         """
 
     def get_map_config(self) -> Dict[str, Any]:
-        """Get map configuration for the template - Override in subclasses"""
-        return {'centerLat': 40.0, 'centerLon': -95.0, 'zoom': 5}
+        """Get map configuration for the template"""
+        # Get preferred base layer from config
+        config = Config.load()
+        preferred_layer = getattr(config.map, "preferred_base_layer", "OpenStreetMap")
+
+        return {
+            'centerLat': 0.0,
+            'centerLon': 0.0,
+            'zoom': 5,
+            'preferredBaseLayer': preferred_layer
+        }
 
     def get_custom_javascript(self) -> str:
         """Get custom JavaScript for the map - Override in subclasses"""
@@ -227,8 +319,8 @@ class BaseMapDialog(QDialog):
         config_js = f"""
         function getMapConfig() {{
             return {{
-                centerLat: {config.get('centerLat', 40.0)},
-                centerLon: {config.get('centerLon', -95.0)},
+                centerLat: {config.get('centerLat', 0.0)},
+                centerLon: {config.get('centerLon', 0.0)},
                 zoom: {config.get('zoom', 5)}
             }};
         }}
@@ -252,6 +344,35 @@ class BaseMapDialog(QDialog):
         """Execute JavaScript code in the web view"""
         if self.map_view:
             self.map_view.page().runJavaScript(js_code)
+
+    def set_base_layer(self, layer_name: str):
+        """Set the active base layer by name"""
+        if self.map_view:
+            js = f"if (typeof setBaseLayer === 'function') setBaseLayer('{layer_name}');"
+            self.run_javascript(js)
+
+    def get_current_base_layer(self, callback):
+        """Get the current base layer name"""
+        if self.map_view:
+            js = "if (typeof getCurrentBaseLayer === 'function') return getCurrentBaseLayer();"
+            self.map_view.page().runJavaScript(js, callback)
+
+    def save_preferred_base_layer(self, layer_name: str):
+        """Save the preferred base layer to application config"""
+        config = Config.load()
+        if not hasattr(config.map, 'preferred_base_layer'):
+            # Add the attribute if it doesn't exist
+            setattr(config.map, 'preferred_base_layer', layer_name)
+        else:
+            # Update the existing attribute
+            config.map.preferred_base_layer = layer_name
+        config.save()
+
+    def load_preferred_base_layer(self):
+        """Load the preferred base layer from application config"""
+        config = Config.load()
+        preferred_layer = getattr(config.map, 'preferred_base_layer', 'OpenStreetMap')
+        self.set_base_layer(preferred_layer)
 
     def showEvent(self, event):
         """Ensure map is properly sized when dialog is shown"""

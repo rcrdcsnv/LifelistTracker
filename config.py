@@ -26,6 +26,7 @@ class ExportConfig(BaseModel):
 class MapConfig(BaseModel):
     default_zoom: int = 5
     marker_size: MarkerSize = MarkerSize()
+    preferred_base_layer: str = "OpenStreetMap"
 
 class CustomField(BaseModel):
     name: str
