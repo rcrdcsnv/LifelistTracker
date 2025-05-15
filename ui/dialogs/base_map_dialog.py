@@ -7,7 +7,6 @@ import tempfile
 import os
 from typing import Dict, Any
 
-
 class BaseMapDialog(QDialog):
     """Base class for dialogs that use Leaflet maps"""
 
@@ -119,6 +118,7 @@ class BaseMapDialog(QDialog):
                 {{custom_styles}}
             </style>
             <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+            <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
         </head>
         <body>
             <div class="loading-message" id="loading">Loading map, please wait...</div>
