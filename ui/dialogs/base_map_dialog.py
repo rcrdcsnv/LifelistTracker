@@ -13,11 +13,17 @@ from config import Config
 class MapBridge(QObject):
     """Bridge object for general map interactions"""
     baseLayerChanged = Signal(str)
+    fullscreenToggled = Signal(bool)
 
     @Slot(str)
     def onBaseLayerChanged(self, layer_name):
         """Called when base layer changes in the map"""
         self.baseLayerChanged.emit(layer_name)
+
+    @Slot(bool)
+    def toggleFullscreen(self, fullscreen):
+        """Called when fullscreen mode should be toggled"""
+        self.fullscreenToggled.emit(fullscreen)
 
 class BaseMapDialog(QDialog):
     """Base class for dialogs that use Leaflet maps"""
@@ -34,6 +40,7 @@ class BaseMapDialog(QDialog):
         # Set up bridge for map interactions
         self.map_bridge = MapBridge()
         self.map_bridge.baseLayerChanged.connect(self._save_preferred_base_layer)
+        self.map_bridge.fullscreenToggled.connect(self._toggle_dialog_fullscreen)
 
         # Create web channel
         self.channel = QWebChannel()
@@ -44,6 +51,13 @@ class BaseMapDialog(QDialog):
         self.setMinimumHeight(600)
 
         self._setup_ui()
+
+    def _toggle_dialog_fullscreen(self, fullscreen):
+        """Toggle fullscreen mode for the dialog"""
+        if fullscreen:
+            self.showFullScreen()
+        else:
+            self.showNormal()
 
     def _setup_ui(self):
         """Set up the basic UI structure"""
@@ -59,6 +73,10 @@ class BaseMapDialog(QDialog):
         settings = self.map_view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+
+        # Enable fullscreen support
+        settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
+        self.map_view.page().fullScreenRequested.connect(lambda request: request.accept())
 
         self.map_view.loadFinished.connect(self._on_load_finished)
         layout.addWidget(self.map_view)
@@ -156,6 +174,7 @@ class BaseMapDialog(QDialog):
                 {{custom_styles}}
             </style>
             <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+            <link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@4.0.0/Control.fullscreen.css" />
             <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
         </head>
         <body>
@@ -164,6 +183,7 @@ class BaseMapDialog(QDialog):
             <div id="map"></div>
 
             <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+            <script src="https://unpkg.com/leaflet.fullscreen@4.0.0/Control.fullscreen.js"></script>
             <script>
                 // Global variables
                 let map, baseMaps, overlayMaps, layerControl, activeBaseLayer;
@@ -193,7 +213,24 @@ class BaseMapDialog(QDialog):
                         map = L.map('map', {
                             center: [config.centerLat, config.centerLon],
                             zoom: config.zoom,
-                            zoomControl: true
+                            zoomControl: true,
+                            fullscreenControl: true,
+                            fullscreenControlOptions: {
+                                position: 'topleft'
+                            }
+                        });
+                        
+                        // Listen for fullscreen events and send to Python
+                        map.on('enterFullscreen', function() {
+                            if (window.mapBridge) {
+                                window.mapBridge.toggleFullscreen(true);
+                            }
+                        });
+                        
+                        map.on('exitFullscreen', function() {
+                            if (window.mapBridge) {
+                                window.mapBridge.toggleFullscreen(false);
+                            }
                         });
 
                         // Define multiple base map layers
