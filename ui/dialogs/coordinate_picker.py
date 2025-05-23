@@ -1,10 +1,13 @@
 # ui/dialogs/coordinate_picker.py
+import os
+import tempfile
 
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QDialogButtonBox, QLineEdit, \
     QMessageBox, QGroupBox
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import Signal, Slot, QUrl
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtGui import QDoubleValidator
+import folium
 from typing import Dict, Any
 from .base_map_dialog import BaseMapDialog, MapBridge
 
@@ -101,23 +104,6 @@ class CoordinatePickerDialog(BaseMapDialog):
         # Create map after UI is set up
         self.create_map()
 
-    def _on_load_finished(self, ok):
-        """When the map is loaded, set up the web channel"""
-        super()._on_load_finished(ok)
-
-        if ok:
-            # Set the web channel after the page loads
-            self.map_view.page().setWebChannel(self.channel)
-
-            # Initialize the bridge
-            self.run_javascript("""
-                // Set up the bridge to receive coordinates
-                new QWebChannel(qt.webChannelTransport, function(channel) {
-                    window.coordBridge = channel.objects.coordBridge;
-                    console.log("Bridge established");
-                });
-            """)
-
     def get_map_config(self) -> Dict[str, Any]:
         """Get map configuration for coordinate picker"""
         return {
@@ -126,120 +112,228 @@ class CoordinatePickerDialog(BaseMapDialog):
             'zoom': 13,  # Increased zoom for better detail
         }
 
-    def get_custom_javascript(self) -> str:
-        """Get custom JavaScript for coordinate picker"""
-        return """
-        let marker;
-        const config = getMapConfig();
+    def create_and_load_map(self):
+        """Create folium map and load it in the web view with custom template"""
+        try:
+            # Create folium map
+            self.folium_map = self._create_folium_map()
 
-        // Create custom marker icon
-        const markerIcon = L.divIcon({
-            className: 'custom-marker',
-            html: '<div style="background: #ff5050; border: 2px solid #fff; border-radius: 50%; width: 10px; height: 10px; box-shadow: 0 0 4px rgba(0,0,0,0.3);"></div>',
-            iconSize: [10, 10],
-            iconAnchor: [6, 6],
-            popupAnchor: [1, -6]
-        });
+            # Add custom features from subclasses
+            self.customize_folium_map(self.folium_map)
 
-        // Create marker
-        marker = L.marker([config.centerLat, config.centerLon], {icon: markerIcon}).addTo(map);
+            # Get folium's HTML and modify it with our own template
+            map_html = self._create_custom_html_template()
 
-        // Add popup to marker
-        marker.bindPopup('Selected Location').openPopup();
+            # Clean up previous temp file
+            if self.temp_file_path and os.path.exists(self.temp_file_path):
+                try:
+                    os.unlink(self.temp_file_path)
+                except Exception:
+                    pass
 
-        // Get coordinate display element
-        const coordDisplay = document.getElementById('coordinate-display');
+            # Create new temp file
+            fd, self.temp_file_path = tempfile.mkstemp(suffix=".html")
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(map_html)
 
-        // Function to update coordinate display
-        function updateCoordinateDisplay(lat, lng) {
-            if (coordDisplay) {
-                coordDisplay.innerHTML = `
-                    <strong>Selected Coordinates:</strong><br>
-                    Latitude: ${lat.toFixed(6)}<br>
-                    Longitude: ${lng.toFixed(6)}
-                `;
-            }
+            # Load the HTML file
+            self.map_view.load(QUrl.fromLocalFile(self.temp_file_path))
 
-            // Send to Qt using the bridge
-            if (window.coordBridge) {
-                window.coordBridge.updateCoordinates(lat, lng);
-                console.log("Sent coordinates to Qt:", lat, lng);
-            }
-        }
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create map: {str(e)}")
 
-        // Show initial coordinates
-        updateCoordinateDisplay(config.centerLat, config.centerLon);
+    def _create_custom_html_template(self):
+        """Create custom HTML template with folium map embedded"""
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Coordinate Picker</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+            <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+            <style>
+                html, body {{
+                    height: 100%;
+                    margin: 0;
+                    padding: 0;
+                    overflow: hidden;
+                }}
+                #map {{
+                    width: 100%;
+                    height: 100%;
+                    cursor: crosshair;
+                }}
+                .coordinate-info {{
+                    position: absolute;
+                    top: 10px;
+                    right: 60px;
+                    background: rgba(255, 255, 255, 0.95);
+                    padding: 12px;
+                    border: 2px solid #007cba;
+                    border-radius: 8px;
+                    z-index: 1000;
+                    font-family: Arial, sans-serif;
+                    font-size: 13px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+                }}
+                .map-help {{
+                    position: absolute;
+                    bottom: 40px;
+                    left: 10px;
+                    background: rgba(255, 255, 255, 0.9);
+                    padding: 8px 12px;
+                    border: 1px solid #ccc;
+                    border-radius: 6px;
+                    z-index: 1000;
+                    font-size: 12px;
+                    max-width: 280px;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="coordinate-info" id="coordinate-display">
+                <div style="font-weight: bold; color: #007cba; margin-bottom: 8px;">📍 Selected Coordinates</div>
+                <div id="coord-lat">Lat: {self.selected_lat:.6f}</div>
+                <div id="coord-lng">Lng: {self.selected_lon:.6f}</div>
+            </div>
 
-        // Handle map clicks
-        map.on('click', function(e) {
-            const lat = e.latlng.lat;
-            const lng = e.latlng.lng;
-        
-            // Move marker to clicked location
-            marker.setLatLng([lat, lng]);
-        
-            // Update coordinate display
-            updateCoordinateDisplay(lat, lng);
-            
-            // Send to Qt using the coordinate bridge
-            if (window.coordBridge) {
-                window.coordBridge.updateCoordinates(lat, lng);
-            }
-        });
+            <div class="map-help">
+                💡 <strong>Tips:</strong> Click anywhere to place marker • Scroll to zoom • Double-click to zoom in
+            </div>
 
-        // Handle coordinate updates from Qt
-        window.updateMarker = function(lat, lng) {
-            if (marker && map) {
-                marker.setLatLng([lat, lng]);
-                map.setView([lat, lng]);
-                updateCoordinateDisplay(lat, lng);
-            }
-        };
-        """
+            <div id="map"></div>
 
-    def get_custom_styles(self) -> str:
-        """Get custom styles for coordinate picker"""
-        return """
-        #map {
-            cursor: crosshair;
-        }
-        .coordinate-display {
-            position: absolute;
-            top: 10px;
-            right: 50px;
-            background: rgba(255, 255, 255, 0.9);
-            padding: 10px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            z-index: 1000;
-            font-family: monospace;
-        }
-        .map-help {
-            position: absolute;
-            bottom: 25px;
-            left: 10px;
-            background: rgba(255, 255, 255, 0.9);
-            padding: 8px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            z-index: 1000;
-            font-size: 12px;
-        }
-        """
+            <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+            <script>
+                // Global variables
+                let map, marker, coordBridge;
 
-    def get_custom_content(self) -> str:
-        """Get custom HTML content for coordinate picker"""
-        return """
-        <div id="coordinate-display" class="coordinate-display">
-            Click on the map to select coordinates
-        </div>
-        <div class="map-help">
-            💡 <strong>Tips:</strong> Scroll to zoom • Hold Shift and drag to zoom area • Double-click to zoom in
-        </div>
+                // Initialize map when DOM is ready
+                document.addEventListener('DOMContentLoaded', function() {{
+                    console.log("DOM loaded, initializing map...");
+                    initMap();
+                }});
+
+                function initMap() {{
+                    console.log("Initializing map...");
+
+                    // Create map
+                    map = L.map('map', {{
+                        center: [{self.selected_lat}, {self.selected_lon}],
+                        zoom: 13,
+                        zoomControl: true
+                    }});
+
+                    // Add base layers
+                    const baseMaps = {{
+                        "OpenStreetMap": L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+                            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                            maxZoom: 19
+                        }}),
+                        "Satellite": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+                            attribution: 'Tiles &copy; Esri',
+                            maxZoom: 18
+                        }}),
+                        "Terrain": L.tileLayer('https://{{s}}.tile.opentopomap.org/{{z}}/{{x}}/{{y}}.png', {{
+                            attribution: 'Map data: &copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap',
+                            maxZoom: 17
+                        }})
+                    }};
+
+                    // Add default layer
+                    baseMaps["OpenStreetMap"].addTo(map);
+
+                    // Add layer control
+                    L.control.layers(baseMaps).addTo(map);
+
+                    // Create initial marker
+                    marker = L.marker([{self.selected_lat}, {self.selected_lon}], {{
+                        draggable: true
+                    }}).addTo(map);
+
+                    marker.bindPopup('Selected Location').openPopup();
+
+                    // Set up QWebChannel
+                    setupBridge();
+
+                    // Set up event handlers
+                    setupEventHandlers();
+
+                    console.log("Map initialization complete!");
+                }}
+
+                function setupBridge() {{
+                    console.log("Setting up QWebChannel bridge...");
+                    new QWebChannel(qt.webChannelTransport, function(channel) {{
+                        coordBridge = channel.objects.coordBridge;
+                        console.log("✓ Bridge established!");
+                    }});
+                }}
+
+                function setupEventHandlers() {{
+                    console.log("Setting up event handlers...");
+
+                    // Handle map clicks
+                    map.on('click', function(e) {{
+                        console.log("🎯 Map clicked at:", e.latlng.lat, e.latlng.lng);
+                        updateCoordinates(e.latlng.lat, e.latlng.lng);
+                    }});
+
+                    // Handle marker drag
+                    marker.on('dragend', function(e) {{
+                        const pos = e.target.getLatLng();
+                        console.log("🎯 Marker dragged to:", pos.lat, pos.lng);
+                        updateCoordinates(pos.lat, pos.lng);
+                    }});
+
+                    console.log("✓ Event handlers attached!");
+                }}
+
+                function updateCoordinates(lat, lng) {{
+                    console.log("📍 Updating coordinates to:", lat, lng);
+
+                    // Move marker
+                    marker.setLatLng([lat, lng]);
+
+                    // Update display
+                    document.getElementById('coord-lat').textContent = 'Lat: ' + lat.toFixed(6);
+                    document.getElementById('coord-lng').textContent = 'Lng: ' + lng.toFixed(6);
+
+                    // Send to Qt
+                    if (coordBridge) {{
+                        try {{
+                            console.log("📡 Sending to Qt:", lat, lng);
+                            coordBridge.updateCoordinates(lat, lng);
+                            console.log("✓ Sent to Qt successfully!");
+                        }} catch (e) {{
+                            console.error("❌ Error sending to Qt:", e);
+                        }}
+                    }} else {{
+                        console.warn("⚠️ Bridge not ready");
+                    }}
+                }}
+
+                // Global function for Qt to call
+                window.updateMarkerPosition = function(lat, lng) {{
+                    console.log("📥 Qt requested marker update:", lat, lng);
+                    if (marker && map) {{
+                        marker.setLatLng([lat, lng]);
+                        map.setView([lat, lng]);
+                        document.getElementById('coord-lat').textContent = 'Lat: ' + lat.toFixed(6);
+                        document.getElementById('coord-lng').textContent = 'Lng: ' + lng.toFixed(6);
+                        console.log("✓ Marker updated from Qt");
+                    }}
+                }};
+            </script>
+        </body>
+        </html>
         """
 
     def _update_coordinates(self, lat, lng):
         """Update coordinates from map click - connected to the bridge signal"""
+        print(f"Bridge received coordinates: {lat}, {lng}")
         self.selected_lat = lat
         self.selected_lon = lng
 
@@ -252,8 +346,6 @@ class CoordinatePickerDialog(BaseMapDialog):
 
         self.lat_edit.blockSignals(False)
         self.lon_edit.blockSignals(False)
-
-        print(f"Coordinates updated: {lat}, {lng}")
 
     def _on_manual_coordinate_change(self):
         """Handle manual coordinate input changes"""
@@ -277,15 +369,49 @@ class CoordinatePickerDialog(BaseMapDialog):
                                     "Longitude must be between -180 and 180.")
                 return
 
+            # Update internal state
             self.selected_lat = lat
             self.selected_lon = lon
 
             # Update map marker using JavaScript
-            self.run_javascript(f"window.updateMarker({lat}, {lon})")
+            print(f"Updating map to coordinates: {lat}, {lon}")
+            self.run_javascript(f"window.updateMarkerPosition({lat}, {lon})")
 
         except ValueError:
             QMessageBox.warning(self, "Invalid Input",
                                 "Please enter valid numeric coordinates.")
+
+    def accept(self):
+        """Override accept to ensure coordinates are up-to-date from fields"""
+        try:
+            # Get final coordinates from the input fields
+            lat = float(self.lat_edit.text())
+            lon = float(self.lon_edit.text())
+
+            # Validate ranges one final time
+            if not (-90 <= lat <= 90):
+                QMessageBox.warning(self, "Invalid Latitude",
+                                    "Latitude must be between -90 and 90.")
+                return
+
+            if not (-180 <= lon <= 180):
+                QMessageBox.warning(self, "Invalid Longitude",
+                                    "Longitude must be between -180 and 180.")
+                return
+
+            # Update internal state with final values
+            self.selected_lat = lat
+            self.selected_lon = lon
+
+            print(f"Dialog accepting with coordinates: {self.selected_lat}, {self.selected_lon}")
+
+            # Call parent accept
+            super().accept()
+
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input",
+                                "Please enter valid numeric coordinates.")
+            return
 
     def get_coordinates(self):
         """Get the selected coordinates"""

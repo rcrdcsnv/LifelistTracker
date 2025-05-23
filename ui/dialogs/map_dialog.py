@@ -2,7 +2,9 @@
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton,
                                QComboBox, QDialogButtonBox, QFileDialog,
                                QMessageBox)
-from typing import Dict, Any
+from typing import Dict, Any, List
+import folium
+from folium import plugins
 import json
 from .base_map_dialog import BaseMapDialog
 
@@ -23,6 +25,7 @@ class MapDialog(BaseMapDialog):
 
         # Map data
         self.observations = []
+        self.marker_cluster = None
 
         super().__init__(parent, f"{observation_term.capitalize()} Map")
 
@@ -142,59 +145,168 @@ class MapDialog(BaseMapDialog):
             'zoom': zoom
         }
 
-    def get_custom_javascript(self) -> str:
-        """Get custom JavaScript for observation map"""
-        # Generate markers data
-        markers = []
+    def customize_folium_map(self, m: folium.Map):
+        """Customize the folium map for observations"""
+        if not self.observations:
+            # Add a message when no observations are found
+            folium.Marker(
+                location=[0, 0],
+                popup=folium.Popup(f'No {self.observation_term}s with coordinates found for the selected filters.',
+                                   max_width=300),
+                icon=folium.Icon(color='gray', icon='info-sign')
+            ).add_to(m)
+            return
+
+        # Create marker cluster for better performance with many markers
+        if len(self.observations) > 10:
+            self.marker_cluster = plugins.MarkerCluster(
+                name="Observations",
+                overlay=True,
+                control=True,
+                show=True
+            )
+            self.marker_cluster.add_to(m)
+        else:
+            self.marker_cluster = m
+
+        # Color mapping for tiers
+        tier_colors = {
+            'wild': 'green',
+            'heard': 'blue',
+            'captive': 'orange',
+            'visual': 'green',
+            'imaged': 'purple',
+            'sketched': 'blue',
+            'read': 'green',
+            'currently reading': 'orange',
+            'want to read': 'red',
+            'visited': 'green',
+            'stayed overnight': 'blue',
+            'want to visit': 'red',
+            'tried': 'green',
+            'cooked': 'blue',
+            'want to try': 'red'
+        }
+
+        # Add markers for each observation
         for obs in self.observations:
             if obs['latitude'] is not None and obs['longitude'] is not None:
-                marker = {
-                    "lat": obs['latitude'],
-                    "lon": obs['longitude'],
-                    "title": obs['entry_name'],
-                    "popup": f"<strong>{obs['entry_name']}</strong><br>" +
-                             f"Date: {obs['observation_date'].strftime('%Y-%m-%d') if obs['observation_date'] else 'Unknown'}<br>" +
-                             f"Location: {obs['location'] or 'Unknown'}<br>" +
-                             f"Tier: {obs['tier'] or 'Unknown'}"
-                }
-                markers.append(marker)
+                # Determine marker color based on tier
+                tier = obs.get('tier', '').lower()
+                color = tier_colors.get(tier, 'gray')
 
-        markers_json = json.dumps(markers)
+                # Create popup content
+                popup_content = f"""
+                <div style="min-width: 200px;">
+                    <h4 style="margin: 0 0 10px 0; color: #2c3e50;">{obs['entry_name']}</h4>
+                    <table style="width: 100%; font-size: 12px;">
+                        <tr><td><strong>Date:</strong></td><td>{obs['observation_date'].strftime('%Y-%m-%d') if obs['observation_date'] else 'Unknown'}</td></tr>
+                        <tr><td><strong>Location:</strong></td><td>{obs['location'] or 'Unknown'}</td></tr>
+                        <tr><td><strong>Tier:</strong></td><td><span style="background-color: {color}; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px;">{obs['tier'] or 'Unknown'}</span></td></tr>
+                        <tr><td><strong>Coordinates:</strong></td><td>{obs['latitude']:.6f}, {obs['longitude']:.6f}</td></tr>
+                    </table>
+                    {f'<p style="margin: 10px 0 0 0; font-size: 11px; font-style: italic;">{obs["notes"][:100]}{"..." if len(obs.get("notes", "")) > 100 else ""}</p>' if obs.get('notes') else ''}
+                </div>
+                """
 
-        return f"""
-        // Add markers
-        const markers = {markers_json};
+                # Create marker with custom icon and popup
+                marker = folium.Marker(
+                    location=[obs['latitude'], obs['longitude']],
+                    popup=folium.Popup(popup_content, max_width=300),
+                    tooltip=f"{obs['entry_name']} ({obs['tier'] or 'Unknown'})",
+                    icon=folium.Icon(
+                        color=color,
+                        icon='info-sign',
+                        prefix='glyphicon'
+                    )
+                )
 
-        if (markers.length > 0) {{
-            let bounds = L.latLngBounds();
+                marker.add_to(self.marker_cluster)
 
-            markers.forEach(function(marker, index) {{
-                if (marker.lat !== undefined && marker.lon !== undefined) {{
-                    const latLng = L.latLng(marker.lat, marker.lon);
-                    const m = L.marker(latLng)
-                        .addTo(map)
-                        .bindPopup(marker.popup);
+        # Auto-fit map to markers if we have observations with coordinates
+        valid_coords = [(obs['latitude'], obs['longitude']) for obs in self.observations
+                        if obs['latitude'] is not None and obs['longitude'] is not None]
 
-                    // Add point to bounds
-                    bounds.extend(latLng);
-                }}
-            }});
+        if valid_coords:
+            # Add JavaScript to fit bounds after map loads
+            bounds_js = f"""
+            var bounds = {json.dumps([[lat, lon] for lat, lon in valid_coords])};
+            if (bounds.length > 0) {{
+                var group = new L.featureGroup();
+                bounds.forEach(function(coord) {{
+                    group.addLayer(L.marker(coord));
+                }});
 
-            // Fit to bounds only if we have valid bounds
-            if (bounds.isValid()) {{
-                if (markers.length === 1) {{
-                    // For single marker, just center on it
-                    map.setView(bounds.getCenter(), 13);
+                if (bounds.length === 1) {{
+                    // For single observation, center on it with reasonable zoom
+                    map.setView(bounds[0], 13);
                 }} else {{
-                    // For multiple markers, fit all in view with padding
-                    map.fitBounds(bounds, {{
-                        padding: [20, 20],  // Padding in pixels
-                        maxZoom: 15         // Don't zoom in too far
+                    // For multiple observations, fit all in view
+                    map.fitBounds(group.getBounds(), {{
+                        padding: [20, 20],
+                        maxZoom: 15
                     }});
                 }}
             }}
-        }}
+            """
+
+            m.get_root().html.add_child(folium.Element(f"""
+            <script>
+            map.whenReady(function() {{
+                setTimeout(function() {{
+                    {bounds_js}
+                }}, 100);
+            }});
+            </script>
+            """))
+
+        # Add a legend for tier colors
+        self._add_tier_legend(m)
+
+    def _add_tier_legend(self, m: folium.Map):
+        """Add a legend showing tier colors"""
+        # Get unique tiers from current observations
+        tiers = list(set(obs.get('tier') for obs in self.observations if obs.get('tier')))
+
+        if not tiers:
+            return
+
+        tier_colors = {
+            'wild': 'green',
+            'heard': 'blue',
+            'captive': 'orange',
+            'visual': 'green',
+            'imaged': 'purple',
+            'sketched': 'blue',
+            'read': 'green',
+            'currently reading': 'orange',
+            'want to read': 'red',
+            'visited': 'green',
+            'stayed overnight': 'blue',
+            'want to visit': 'red',
+            'tried': 'green',
+            'cooked': 'blue',
+            'want to try': 'red'
+        }
+
+        # Create legend HTML
+        legend_html = """
+        <div style="position: fixed; 
+                    bottom: 50px; left: 50px; width: 150px; height: auto; 
+                    background-color: white; border:2px solid grey; z-index:9999; 
+                    font-size:14px; padding: 10px;">
+        <h4 style="margin: 0 0 10px 0;">Tier Legend</h4>
         """
+
+        for tier in sorted(tiers):
+            color = tier_colors.get(tier.lower(), 'gray')
+            legend_html += f"""
+            <p style="margin: 5px 0;"><i class="fa fa-circle" style="color:{color}"></i> {tier}</p>
+            """
+
+        legend_html += "</div>"
+
+        m.get_root().html.add_child(folium.Element(legend_html))
 
     def _load_tiers(self):
         """Load tiers for the lifelist"""
@@ -261,7 +373,7 @@ class MapDialog(BaseMapDialog):
                     "No Coordinates",
                     f"No {self.observation_term}s with coordinates found for the selected filters."
                 )
-                # Create empty map
+                # Create empty observations list for map
                 self.observations = []
 
             # Create/recreate the map with current observations
@@ -269,8 +381,8 @@ class MapDialog(BaseMapDialog):
 
     def _save_map(self):
         """Save map as HTML file"""
-        if not self.map_view:
-            QMessageBox.warning(self, "Error", "Map view not available")
+        if not self.folium_map:
+            QMessageBox.warning(self, "Error", "Map not available")
             return
 
         file_path, _ = QFileDialog.getSaveFileName(
@@ -282,25 +394,13 @@ class MapDialog(BaseMapDialog):
 
         if file_path:
             try:
-                # Get current page HTML with a callback
-                def save_callback(html):
-                    try:
-                        with open(file_path, 'w', encoding='utf-8') as f:
-                            f.write(html)
-                        QMessageBox.information(
-                            self,
-                            "Map Saved",
-                            f"Map has been saved to {file_path}"
-                        )
-                    except Exception as e:
-                        QMessageBox.critical(
-                            self,
-                            "Error",
-                            f"Failed to save map: {str(e)}"
-                        )
-
-                self.map_view.page().toHtml(save_callback)
-
+                # Save the folium map directly
+                self.folium_map.save(file_path)
+                QMessageBox.information(
+                    self,
+                    "Map Saved",
+                    f"Map has been saved to {file_path}"
+                )
             except Exception as e:
                 QMessageBox.critical(
                     self,

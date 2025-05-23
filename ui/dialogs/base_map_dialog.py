@@ -6,6 +6,8 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 import tempfile
 import os
+import folium
+from folium import plugins
 from typing import Dict, Any
 from config import Config
 
@@ -25,8 +27,9 @@ class MapBridge(QObject):
         """Called when fullscreen mode should be toggled"""
         self.fullscreenToggled.emit(fullscreen)
 
+
 class BaseMapDialog(QDialog):
-    """Base class for dialogs that use Leaflet maps"""
+    """Base class for dialogs that use folium maps"""
 
     # Signal emitted when map is loaded
     map_loaded = Signal()
@@ -36,6 +39,7 @@ class BaseMapDialog(QDialog):
 
         self.temp_file_path = None
         self.map_view = None
+        self.folium_map = None
 
         # Set up bridge for map interactions
         self.map_bridge = MapBridge()
@@ -108,9 +112,166 @@ class BaseMapDialog(QDialog):
         config.map.preferred_base_layer = layer_name
         config.save()
 
-    def create_and_load_map(self, html_content: str):
-        """Create temporary HTML file and load it in the map view"""
+    def _create_folium_map(self) -> folium.Map:
+        """Create a folium map with standard configuration"""
+        # Get configuration
+        config_data = self.get_map_config()
+        config = Config.load()
+
+        # Create base map
+        m = folium.Map(
+            location=[config_data.get('centerLat', 0.0), config_data.get('centerLon', 0.0)],
+            zoom_start=config_data.get('zoom', 5),
+            tiles=None  # We'll add tiles manually for better control
+        )
+
+        # Add multiple tile layers
+        base_layers = self._get_base_layers()
+        preferred_layer = getattr(config.map, 'preferred_base_layer', 'OpenStreetMap')
+
+        # Add base layers to map
+        layer_added = False
+        for layer_name, layer_config in base_layers.items():
+            tile_layer = folium.TileLayer(
+                tiles=layer_config['url'],
+                attr=layer_config['attribution'],
+                name=layer_name,
+                overlay=False,
+                control=True,
+                max_zoom=layer_config.get('max_zoom', 19)
+            )
+
+            # Add the preferred layer as default, or first one if preferred not found
+            if layer_name == preferred_layer or (not layer_added and layer_name == 'OpenStreetMap'):
+                layer_added = True
+            tile_layer.add_to(m)
+        # Add plugins
+        plugins.Fullscreen(
+            position='topleft',
+            title='Toggle fullscreen',
+            title_cancel='Exit fullscreen',
+            force_separate_button=True
+        ).add_to(m)
+
+        # Add measure control for distance/area measurement
+        plugins.MeasureControl(
+            position='topright',
+            primary_length_unit='kilometers',
+            secondary_length_unit='miles',
+            primary_area_unit='sqkilometers',
+            secondary_area_unit='acres'
+        ).add_to(m)
+
+        # Add layer control
+        folium.LayerControl(
+            position='topright',
+            collapsed=True
+        ).add_to(m)
+
+        # Add scale control
+        plugins.LocateControl(
+            position='topleft',
+            strings={
+                'title': 'See current location',
+                'popup': 'Your current location'
+            }
+        ).add_to(m)
+
+        return m
+
+    def _get_base_layers(self) -> Dict[str, Dict[str, Any]]:
+        """Get configuration for base layers"""
+        return {
+            'OpenStreetMap': {
+                'url': 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                'attribution': '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                'max_zoom': 19
+            },
+            'Satellite': {
+                'url': 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                'attribution': 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+                'max_zoom': 18
+            },
+            'Terrain': {
+                'url': 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+                'attribution': 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="http://viewfinderpanoramas.org">SRTM</a> | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)',
+                'max_zoom': 17
+            },
+            'CartoDB Positron': {
+                'url': 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+                'attribution': '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                'max_zoom': 19
+            },
+            'CartoDB Dark': {
+                'url': 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+                'attribution': '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                'max_zoom': 19
+            }
+        }
+
+    def _add_custom_javascript(self, m: folium.Map) -> str:
+        """Add custom JavaScript for Qt integration"""
+        # Base JavaScript for layer change detection and fullscreen handling
+        return """
+        <script>
+        // Set up Qt WebChannel bridge
+        new QWebChannel(qt.webChannelTransport, function(channel) {
+            window.mapBridge = channel.objects.mapBridge;
+
+            // Monitor layer changes
+            map.on('baselayerchange', function(e) {
+                if (window.mapBridge) {
+                    window.mapBridge.onBaseLayerChanged(e.name);
+                }
+            });
+
+            // Monitor fullscreen changes
+            map.on('enterFullscreen', function() {
+                if (window.mapBridge) {
+                    window.mapBridge.toggleFullscreen(true);
+                }
+            });
+
+            map.on('exitFullscreen', function() {
+                if (window.mapBridge) {
+                    window.mapBridge.toggleFullscreen(false);
+                }
+            });
+
+            // Allow subclasses to add custom initialization
+            if (typeof initializeCustomFeatures === 'function') {
+                initializeCustomFeatures();
+            }
+        });
+
+        // Custom features from subclasses
+        function initializeCustomFeatures() {
+            """ + self.get_custom_javascript() + """
+        }
+        </script>
+        """
+
+    def create_and_load_map(self):
+        """Create folium map and load it in the web view"""
         try:
+            # Create folium map
+            self.folium_map = self._create_folium_map()
+
+            # Add custom features from subclasses
+            self.customize_folium_map(self.folium_map)
+
+            # Get HTML representation
+            map_html = self.folium_map._repr_html_()
+
+            # Add custom JavaScript for Qt integration
+            custom_js = self._add_custom_javascript(self.folium_map)
+
+            # Insert the custom JavaScript before closing body tag
+            if '</body>' in map_html:
+                map_html = map_html.replace('</body>', custom_js + '\n</body>')
+            else:
+                map_html += custom_js
+
             # Clean up previous temp file
             if self.temp_file_path and os.path.exists(self.temp_file_path):
                 try:
@@ -121,7 +282,7 @@ class BaseMapDialog(QDialog):
             # Create new temp file
             fd, self.temp_file_path = tempfile.mkstemp(suffix=".html")
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                f.write(html_content)
+                f.write(map_html)
 
             # Load the HTML file
             self.map_view.load(QUrl.fromLocalFile(self.temp_file_path))
@@ -129,194 +290,8 @@ class BaseMapDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create map: {str(e)}")
 
-    def get_base_html_template(self) -> str:
-        """Get the base HTML template with common Leaflet setup"""
-        return """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <title>Map</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                html, body {
-                    height: 100%;
-                    margin: 0;
-                    padding: 0;
-                    overflow: hidden;
-                }
-                #map {
-                    width: 100%;
-                    height: 100%;
-                }
-                .loading-message {
-                    position: absolute;
-                    top: 50%;
-                    left: 50%;
-                    transform: translate(-50%, -50%);
-                    background: rgba(255, 255, 255, 0.9);
-                    padding: 20px;
-                    border: 1px solid #ccc;
-                    border-radius: 4px;
-                    z-index: 1000;
-                    font-size: 18px;
-                }
-                /* Custom styling for layer control */
-                .leaflet-control-layers {
-                    border-radius: 7px !important;
-                    box-shadow: 0 1px 5px rgba(0,0,0,0.4);
-                }
-                .leaflet-control-layers-toggle {
-                    width: 26px !important;
-                    height: 26px !important;
-                    background-size: 20px 20px;
-                }
-                {{custom_styles}}
-            </style>
-            <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-            <link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@4.0.0/Control.fullscreen.css" />
-            <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
-        </head>
-        <body>
-            <div class="loading-message" id="loading">Loading map, please wait...</div>
-            {{custom_content}}
-            <div id="map"></div>
-
-            <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-            <script src="https://unpkg.com/leaflet.fullscreen@4.0.0/Control.fullscreen.js"></script>
-            <script>
-                // Global variables
-                let map, baseMaps, overlayMaps, layerControl, activeBaseLayer;
-                const loading = document.getElementById('loading');
-
-                // Initialize map when DOM is ready
-                document.addEventListener('DOMContentLoaded', function() {
-                    setTimeout(initMap, 100);
-                });
-
-                // Also initialize if DOM is already ready
-                if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                    setTimeout(initMap, 200);
-                }
-
-                function initMap() {
-                    if (typeof L === 'undefined') {
-                        setTimeout(initMap, 100);
-                        return;
-                    }
-
-                    try {
-                        // Get configuration from template
-                        const config = getMapConfig();
-
-                        // Initialize map with configuration
-                        map = L.map('map', {
-                            center: [config.centerLat, config.centerLon],
-                            zoom: config.zoom,
-                            zoomControl: true,
-                            fullscreenControl: true,
-                            fullscreenControlOptions: {
-                                position: 'topleft'
-                            }
-                        });
-                        
-                        // Listen for fullscreen events and send to Python
-                        map.on('enterFullscreen', function() {
-                            if (window.mapBridge) {
-                                window.mapBridge.toggleFullscreen(true);
-                            }
-                        });
-                        
-                        map.on('exitFullscreen', function() {
-                            if (window.mapBridge) {
-                                window.mapBridge.toggleFullscreen(false);
-                            }
-                        });
-
-                        // Define multiple base map layers
-                        baseMaps = {
-                            "OpenStreetMap": L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-                                maxZoom: 19,
-                                subdomains: ['a', 'b', 'c']
-                            }),
-
-                            "Satellite": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-                                attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
-                                maxZoom: 18
-                            }),
-
-                            "Terrain": L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-                                attribution: 'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="http://viewfinderpanoramas.org">SRTM</a> | Map style: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)',
-                                maxZoom: 17
-                            }),
-
-                            "Dark": L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-                                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-                                subdomains: 'abcd',
-                                maxZoom: 19
-                            }),
-
-                            "Light": L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-                                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-                                subdomains: 'abcd',
-                                maxZoom: 19
-                            })
-                        };
-
-                        // Set default base layer from config
-                        activeBaseLayer = config.preferredBaseLayer || "OpenStreetMap";
-                        baseMaps[activeBaseLayer].addTo(map);
-
-                        // Add layer control - collapsed to a button
-                        overlayMaps = {}; // Will be populated by child classes if needed
-                        layerControl = L.control.layers(baseMaps, overlayMaps, {
-                            collapsed: true,  // This makes it collapse to a button
-                            position: 'topright'
-                        }).addTo(map);
-
-                        // Add scale control
-                        L.control.scale({imperial: false}).addTo(map);
-
-                        // Hide loading message when tiles are loaded
-                        baseMaps[activeBaseLayer].on('load', function() {
-                            loading.style.display = 'none';
-                            // Invalidate size to ensure proper centering
-                            map.invalidateSize();
-                        });
-
-                        // Track active base layer changes
-                        map.on('baselayerchange', function(e) {
-                            activeBaseLayer = e.name;
-                            // Send the selected layer back to Python using the bridge
-                            if (window.mapBridge) {
-                                window.mapBridge.onBaseLayerChanged(activeBaseLayer);
-                            }
-                        });
-
-                        // Allow subclasses to initialize their specific features
-                        initializeCustomFeatures();
-
-                    } catch (error) {
-                        loading.innerHTML = 'Error loading map. Please refresh and try again.';
-                        loading.style.background = 'rgba(255, 0, 0, 0.9)';
-                        loading.style.color = 'white';
-                        console.error('Map initialization error:', error);
-                    }
-                }
-
-                // Function to be replaced by subclasses
-                {{config_javascript}}
-
-                // Function to be replaced by subclasses
-                {{features_javascript}}
-            </script>
-        </body>
-        </html>
-        """
-
     def get_map_config(self) -> Dict[str, Any]:
-        """Get map configuration for the template"""
+        """Get map configuration for the template - Override in subclasses"""
         # Get preferred base layer from config
         config = Config.load()
         preferred_layer = getattr(config.map, "preferred_base_layer", "OpenStreetMap")
@@ -328,54 +303,17 @@ class BaseMapDialog(QDialog):
             'preferredBaseLayer': preferred_layer
         }
 
+    def customize_folium_map(self, m: folium.Map):
+        """Customize the folium map - Override in subclasses"""
+        pass
+
     def get_custom_javascript(self) -> str:
         """Get custom JavaScript for the map - Override in subclasses"""
         return ""
 
-    def get_custom_styles(self) -> str:
-        """Get custom CSS styles (optional override)"""
-        return ""
-
-    def get_custom_content(self) -> str:
-        """Get custom HTML content between body and map (optional override)"""
-        return ""
-
     def create_map(self):
-        """Create the map using template and configuration"""
-        # Get template
-        template = self.get_base_html_template()
-
-        # Get configuration
-        config = self.get_map_config()
-
-        # Replace custom placeholders
-        html_content = template.replace("{{custom_styles}}", self.get_custom_styles())
-        html_content = html_content.replace("{{custom_content}}", self.get_custom_content())
-
-        # Create the configuration JavaScript
-        config_js = f"""
-        function getMapConfig() {{
-            return {{
-                centerLat: {config.get('centerLat', 0.0)},
-                centerLon: {config.get('centerLon', 0.0)},
-                zoom: {config.get('zoom', 5)}
-            }};
-        }}
-        """
-
-        # Create the custom features JavaScript
-        features_js = f"""
-        function initializeCustomFeatures() {{
-            {self.get_custom_javascript()}
-        }}
-        """
-
-        # Replace the placeholders with actual JavaScript
-        html_content = html_content.replace("{{config_javascript}}", config_js)
-        html_content = html_content.replace("{{features_javascript}}", features_js)
-
-        # Create and load the map
-        self.create_and_load_map(html_content)
+        """Create the map using folium"""
+        self.create_and_load_map()
 
     def run_javascript(self, js_code: str):
         """Execute JavaScript code in the web view"""
@@ -385,13 +323,30 @@ class BaseMapDialog(QDialog):
     def set_base_layer(self, layer_name: str):
         """Set the active base layer by name"""
         if self.map_view:
-            js = f"if (typeof setBaseLayer === 'function') setBaseLayer('{layer_name}');"
+            js = f"""
+            // Find and activate the layer
+            map.eachLayer(function(layer) {{
+                if (layer.options && layer.options.name === '{layer_name}') {{
+                    map.addLayer(layer);
+                }} else if (layer.options && layer.options.name && !layer.options.overlay) {{
+                    map.removeLayer(layer);
+                }}
+            }});
+            """
             self.run_javascript(js)
 
     def get_current_base_layer(self, callback):
         """Get the current base layer name"""
         if self.map_view:
-            js = "if (typeof getCurrentBaseLayer === 'function') return getCurrentBaseLayer();"
+            js = """
+            var activeLayer = null;
+            map.eachLayer(function(layer) {
+                if (layer.options && layer.options.name && !layer.options.overlay && map.hasLayer(layer)) {
+                    activeLayer = layer.options.name;
+                }
+            });
+            activeLayer;
+            """
             self.map_view.page().runJavaScript(js, callback)
 
     def save_preferred_base_layer(self, layer_name: str):
