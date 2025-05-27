@@ -1,5 +1,6 @@
 # ui/dialogs/coordinate_picker.py
 import os
+import tempfile
 from PySide6.QtWidgets import QLineEdit
 from PySide6.QtCore import Signal, Slot
 from .base_map_dialog import BaseMapDialog, MapBridge
@@ -426,8 +427,6 @@ class CoordinatePickerDialog(BaseMapDialog):
                     pass
 
             # Create new temp file
-            import tempfile
-            import os
             fd, self.temp_file_path = tempfile.mkstemp(suffix=".html")
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 f.write(map_html)
@@ -454,7 +453,6 @@ class CoordinatePickerDialog(BaseMapDialog):
         """Clean up temporary files when closing"""
         if hasattr(self, 'temp_file_path') and self.temp_file_path and os.path.exists(self.temp_file_path):
             try:
-                import os
                 os.unlink(self.temp_file_path)
             except Exception:
                 pass
