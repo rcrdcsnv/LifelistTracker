@@ -1,14 +1,7 @@
 # ui/dialogs/coordinate_picker.py
 import os
-import tempfile
-
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QDialogButtonBox, QLineEdit, \
-    QMessageBox, QGroupBox
-from PySide6.QtCore import Signal, Slot, QUrl
-from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtGui import QDoubleValidator
-import folium
-from typing import Dict, Any
+from PySide6.QtWidgets import QLineEdit
+from PySide6.QtCore import Signal, Slot
 from .base_map_dialog import BaseMapDialog, MapBridge
 
 
@@ -43,7 +36,7 @@ class CoordinatePickerDialog(BaseMapDialog):
     """Dialog for selecting coordinates from an interactive map"""
 
     def __init__(self, parent=None, initial_lat=None, initial_lon=None):
-        # Init coordinates
+        # Init coordinates FIRST
         if initial_lat is not None and initial_lon is not None:
             self.selected_lat = initial_lat
             self.selected_lon = initial_lon
@@ -51,20 +44,36 @@ class CoordinatePickerDialog(BaseMapDialog):
             self.selected_lat = 0.0
             self.selected_lon = 0.0
 
-        # Call parent constructor first
+        # Call parent constructor
         super().__init__(parent, "Select Coordinates")
 
-        # Replace the bridge with our specialized version
+        # Create our specialized bridge and replace the base class one
         self.coord_bridge = CoordinateBridge()
         self.coord_bridge.coordinatesChanged.connect(self._update_coordinates)
         self.coord_bridge.baseLayerChanged.connect(self._save_preferred_base_layer)
 
-        # Update the channel to use our bridge
+        # Replace the channel from base class with our own
+        from PySide6.QtWebChannel import QWebChannel
         self.channel = QWebChannel()
         self.channel.registerObject("coordBridge", self.coord_bridge)
 
+    def _on_load_finished(self, ok):
+        """Override to ensure our channel is set properly"""
+        if not ok:
+            print("Failed to load coordinate picker map")
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Warning", "Failed to load map. Please try again.")
+        else:
+            print("Coordinate picker map loaded successfully")
+            # Set up our custom web channel
+            self.map_view.page().setWebChannel(self.channel)
+            self.map_loaded.emit()
+
     def add_controls(self):
         """Add coordinate picker specific controls"""
+        from PySide6.QtWidgets import QLabel, QLineEdit, QHBoxLayout, QPushButton, QGroupBox
+        from PySide6.QtGui import QDoubleValidator
+
         # Instructions
         instructions = QLabel("Click on the map to select coordinates. The marker will move to your click location.")
         instructions.setWordWrap(True)
@@ -96,51 +105,23 @@ class CoordinatePickerDialog(BaseMapDialog):
 
     def add_bottom_controls(self):
         """Add dialog buttons at the bottom"""
+        from PySide6.QtWidgets import QDialogButtonBox
+
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         self.layout().addWidget(button_box)
 
         # Create map after UI is set up
-        self.create_map()
+        self.create_coordinate_picker_map()
 
-    def get_map_config(self) -> Dict[str, Any]:
+    def get_map_config(self):
         """Get map configuration for coordinate picker"""
         return {
             'centerLat': self.selected_lat,
             'centerLon': self.selected_lon,
             'zoom': 13,  # Increased zoom for better detail
         }
-
-    def create_and_load_map(self):
-        """Create folium map and load it in the web view with custom template"""
-        try:
-            # Create folium map
-            self.folium_map = self._create_folium_map()
-
-            # Add custom features from subclasses
-            self.customize_folium_map(self.folium_map)
-
-            # Get folium's HTML and modify it with our own template
-            map_html = self._create_custom_html_template()
-
-            # Clean up previous temp file
-            if self.temp_file_path and os.path.exists(self.temp_file_path):
-                try:
-                    os.unlink(self.temp_file_path)
-                except Exception:
-                    pass
-
-            # Create new temp file
-            fd, self.temp_file_path = tempfile.mkstemp(suffix=".html")
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                f.write(map_html)
-
-            # Load the HTML file
-            self.map_view.load(QUrl.fromLocalFile(self.temp_file_path))
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to create map: {str(e)}")
 
     def _create_custom_html_template(self):
         """Create custom HTML template with folium map embedded"""
@@ -209,11 +190,14 @@ class CoordinatePickerDialog(BaseMapDialog):
             <script>
                 // Global variables
                 let map, marker, coordBridge;
+                let bridgeSetupAttempts = 0;
+                const maxBridgeAttempts = 20; // 1 second total
 
-                // Initialize map when DOM is ready
-                document.addEventListener('DOMContentLoaded', function() {{
-                    console.log("DOM loaded, initializing map...");
+                // Initialize when page loads
+                window.addEventListener('load', function() {{
+                    console.log("Page loaded, initializing map...");
                     initMap();
+                    setTimeout(setupBridge, 100); // Small delay to ensure Qt is ready
                 }});
 
                 function initMap() {{
@@ -255,21 +239,30 @@ class CoordinatePickerDialog(BaseMapDialog):
 
                     marker.bindPopup('Selected Location').openPopup();
 
-                    // Set up QWebChannel
-                    setupBridge();
-
-                    // Set up event handlers
-                    setupEventHandlers();
-
                     console.log("Map initialization complete!");
                 }}
 
                 function setupBridge() {{
-                    console.log("Setting up QWebChannel bridge...");
-                    new QWebChannel(qt.webChannelTransport, function(channel) {{
-                        coordBridge = channel.objects.coordBridge;
-                        console.log("✓ Bridge established!");
-                    }});
+                    bridgeSetupAttempts++;
+                    console.log(`Bridge setup attempt ${{bridgeSetupAttempts}}...`);
+
+                    if (typeof qt !== 'undefined' && qt.webChannelTransport) {{
+                        console.log("Qt WebChannel transport found!");
+                        new QWebChannel(qt.webChannelTransport, function(channel) {{
+                            coordBridge = channel.objects.coordBridge;
+                            if (coordBridge) {{
+                                console.log("✓ CoordBridge established successfully!");
+                                setupEventHandlers();
+                            }} else {{
+                                console.error("❌ CoordBridge object not found in channel");
+                            }}
+                        }});
+                    }} else if (bridgeSetupAttempts < maxBridgeAttempts) {{
+                        console.log("Qt WebChannel not ready, retrying...");
+                        setTimeout(setupBridge, 50);
+                    }} else {{
+                        console.error("❌ Failed to establish Qt WebChannel after maximum attempts");
+                    }}
                 }}
 
                 function setupEventHandlers() {{
@@ -311,7 +304,7 @@ class CoordinatePickerDialog(BaseMapDialog):
                             console.error("❌ Error sending to Qt:", e);
                         }}
                     }} else {{
-                        console.warn("⚠️ Bridge not ready");
+                        console.error("❌ Bridge not available");
                     }}
                 }}
 
@@ -360,11 +353,13 @@ class CoordinatePickerDialog(BaseMapDialog):
 
             # Validate ranges
             if not (-90 <= lat <= 90):
+                from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "Invalid Latitude",
                                     "Latitude must be between -90 and 90.")
                 return
 
             if not (-180 <= lon <= 180):
+                from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "Invalid Longitude",
                                     "Longitude must be between -180 and 180.")
                 return
@@ -378,6 +373,7 @@ class CoordinatePickerDialog(BaseMapDialog):
             self.run_javascript(f"window.updateMarkerPosition({lat}, {lon})")
 
         except ValueError:
+            from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Invalid Input",
                                 "Please enter valid numeric coordinates.")
 
@@ -390,11 +386,13 @@ class CoordinatePickerDialog(BaseMapDialog):
 
             # Validate ranges one final time
             if not (-90 <= lat <= 90):
+                from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "Invalid Latitude",
                                     "Latitude must be between -90 and 90.")
                 return
 
             if not (-180 <= lon <= 180):
+                from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(self, "Invalid Longitude",
                                     "Longitude must be between -180 and 180.")
                 return
@@ -409,11 +407,55 @@ class CoordinatePickerDialog(BaseMapDialog):
             super().accept()
 
         except ValueError:
+            from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Invalid Input",
                                 "Please enter valid numeric coordinates.")
             return
+
+    def create_coordinate_picker_map(self):
+        """Create coordinate picker map using custom HTML template"""
+        try:
+            # Get the custom HTML template directly
+            map_html = self._create_custom_html_template()
+
+            # Clean up previous temp file
+            if hasattr(self, 'temp_file_path') and self.temp_file_path and os.path.exists(self.temp_file_path):
+                try:
+                    os.unlink(self.temp_file_path)
+                except Exception:
+                    pass
+
+            # Create new temp file
+            import tempfile
+            import os
+            fd, self.temp_file_path = tempfile.mkstemp(suffix=".html")
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(map_html)
+
+            # Load the HTML file
+            from PySide6.QtCore import QUrl
+            self.map_view.load(QUrl.fromLocalFile(self.temp_file_path))
+
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Error", f"Failed to create map: {str(e)}")
+
+    def run_javascript(self, js_code: str):
+        """Execute JavaScript code in the web view"""
+        if self.map_view:
+            self.map_view.page().runJavaScript(js_code)
 
     def get_coordinates(self):
         """Get the selected coordinates"""
         print(f"Returning coordinates: {self.selected_lat}, {self.selected_lon}")
         return self.selected_lat, self.selected_lon
+
+    def closeEvent(self, event):
+        """Clean up temporary files when closing"""
+        if hasattr(self, 'temp_file_path') and self.temp_file_path and os.path.exists(self.temp_file_path):
+            try:
+                import os
+                os.unlink(self.temp_file_path)
+            except Exception:
+                pass
+        super().closeEvent(event)
