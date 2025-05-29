@@ -1,9 +1,9 @@
 # ui/dialogs/base_map_dialog.py
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtWidgets import QDialog, QVBoxLayout, QMessageBox
-from PySide6.QtCore import QUrl, Signal, QObject, Slot
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QMessageBox, QWidget, QDialogButtonBox
+from PySide6.QtCore import QUrl, Signal, QObject, Slot, Qt
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEngineSettings, QWebEngineFullScreenRequest
 import tempfile
 import os
 import folium
@@ -28,6 +28,34 @@ class MapBridge(QObject):
         self.fullscreenToggled.emit(fullscreen)
 
 
+class FullscreenMapWindow(QWidget):
+    """A fullscreen window to display the map"""
+    closed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Make this a tool window that's dependent on parent
+        # Qt.Tool makes it close when parent closes
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setAttribute(Qt.WA_QuitOnClose, False)  # Don't quit app when this closes
+
+        # Create layout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+    def keyPressEvent(self, event):
+        """Handle key press events - ESC to exit fullscreen"""
+        if event.key() == Qt.Key_Escape:
+            self.close()
+        super().keyPressEvent(event)
+
+    def closeEvent(self, event):
+        """Emit signal when closing"""
+        self.closed.emit()
+        super().closeEvent(event)
+
+
 class BaseMapDialog(QDialog):
     """Base class for dialogs that use folium maps"""
 
@@ -41,10 +69,14 @@ class BaseMapDialog(QDialog):
         self.map_view = None
         self.folium_map = None
 
+        # Fullscreen management
+        self._fullscreen_window = None
+        self._is_fullscreen = False
+        self._original_parent = None
+
         # Set up bridge for map interactions
         self.map_bridge = MapBridge()
         self.map_bridge.baseLayerChanged.connect(self._save_preferred_base_layer)
-        self.map_bridge.fullscreenToggled.connect(self._toggle_dialog_fullscreen)
 
         # Create web channel
         self.channel = QWebChannel()
@@ -54,14 +86,20 @@ class BaseMapDialog(QDialog):
         self.setMinimumWidth(800)
         self.setMinimumHeight(600)
 
+        # Make sure we clean up on destruction
+        self.setAttribute(Qt.WA_DeleteOnClose)
+
         self._setup_ui()
 
-    def _toggle_dialog_fullscreen(self, fullscreen):
-        """Toggle fullscreen mode for the dialog"""
-        if fullscreen:
-            self.showFullScreen()
-        else:
-            self.showNormal()
+    def __del__(self):
+        """Destructor to ensure cleanup"""
+        try:
+            # Force close fullscreen window if it exists
+            if hasattr(self, '_fullscreen_window') and self._fullscreen_window:
+                if self._fullscreen_window.isVisible():
+                    self._fullscreen_window.close()
+        except:
+            pass
 
     def _setup_ui(self):
         """Set up the basic UI structure"""
@@ -80,13 +118,119 @@ class BaseMapDialog(QDialog):
 
         # Enable fullscreen support
         settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
-        self.map_view.page().fullScreenRequested.connect(lambda request: request.accept())
+        self.map_view.page().fullScreenRequested.connect(self._handle_fullscreen_request)
 
         self.map_view.loadFinished.connect(self._on_load_finished)
         layout.addWidget(self.map_view)
 
         # Add any custom bottom controls
         self.add_bottom_controls()
+
+    def _handle_fullscreen_request(self, request: QWebEngineFullScreenRequest):
+        """Handle fullscreen request from the web content"""
+        if request.toggleOn():
+            # Accept the request first
+            request.accept()
+            # Then handle our custom fullscreen
+            self._enter_fullscreen()
+        else:
+            # Accept the request first
+            request.accept()
+            # Then exit our custom fullscreen
+            self._exit_fullscreen()
+
+    def _enter_fullscreen(self):
+        """Enter fullscreen mode by moving map view to a fullscreen window"""
+        if self._is_fullscreen:
+            return
+
+        # Create fullscreen window with this dialog as parent
+        self._fullscreen_window = FullscreenMapWindow(self)
+        self._fullscreen_window.closed.connect(self._exit_fullscreen)
+
+        # Connect to parent's close/hide signals to ensure cleanup
+        if self.parent():
+            try:
+                self.parent().destroyed.connect(self._exit_fullscreen)
+            except:
+                pass
+
+        # Remember original parent
+        self._original_parent = self.map_view.parent()
+
+        # Move map view to fullscreen window
+        self.map_view.setParent(self._fullscreen_window)
+        self._fullscreen_window.layout().addWidget(self.map_view)
+
+        # Show fullscreen
+        self._fullscreen_window.showFullScreen()
+        self._is_fullscreen = True
+
+        # Also trigger the JavaScript side to know we're in fullscreen
+        self.run_javascript("""
+            if (typeof map !== 'undefined' && map._controlContainer) {
+                // Trigger resize to adjust to new dimensions
+                setTimeout(function() { 
+                    map.invalidateSize(); 
+                }, 100);
+            }
+        """)
+
+    def _exit_fullscreen(self):
+        """Exit fullscreen mode by moving map view back to dialog"""
+        if not self._is_fullscreen:
+            return
+
+        # Move map view back to original parent
+        if self._original_parent and self.map_view:
+            # Find the original layout position
+            original_layout = self.layout()
+
+            # Remove from fullscreen window
+            self.map_view.setParent(None)
+
+            # Add back to original position (after controls, before bottom controls)
+            # We need to insert at the correct index
+            insert_index = original_layout.count() - 1  # Before bottom controls
+            for i in range(original_layout.count()):
+                if hasattr(original_layout.itemAt(i), 'widget'):
+                    widget = original_layout.itemAt(i).widget()
+                    if isinstance(widget, QDialogButtonBox):
+                        insert_index = i
+                        break
+
+            original_layout.insertWidget(insert_index, self.map_view)
+
+        # Close fullscreen window
+        if self._fullscreen_window:
+            try:
+                if self._fullscreen_window.isVisible():
+                    self._fullscreen_window.close()
+            except RuntimeError:
+                # Window might already be deleted
+                pass
+            finally:
+                self._fullscreen_window = None
+
+        self._is_fullscreen = False
+
+        # Trigger resize on JavaScript side
+        self.run_javascript("""
+            if (typeof map !== 'undefined' && map._controlContainer) {
+                // Trigger resize to adjust back to dialog dimensions
+                setTimeout(function() { 
+                    map.invalidateSize(); 
+
+                    // Also need to tell Leaflet we're not in fullscreen anymore
+                    if (map._controlContainer && map._controlContainer.querySelector('.leaflet-control-fullscreen')) {
+                        var fullscreenControl = map._controlContainer.querySelector('.leaflet-control-fullscreen');
+                        if (fullscreenControl && fullscreenControl.classList.contains('leaflet-fullscreen-on')) {
+                            fullscreenControl.click();
+                        }
+                    }
+                }, 100);
+            }
+        """)
 
     def add_controls(self):
         """Add custom controls to the top of the dialog - Override in subclasses"""
@@ -145,6 +289,7 @@ class BaseMapDialog(QDialog):
             if layer_name == preferred_layer or (not layer_added and layer_name == 'OpenStreetMap'):
                 layer_added = True
             tile_layer.add_to(m)
+
         # Add plugins
         plugins.Fullscreen(
             position='topleft',
@@ -211,7 +356,7 @@ class BaseMapDialog(QDialog):
 
     def _add_custom_javascript(self, m: folium.Map) -> str:
         """Add custom JavaScript for Qt integration"""
-        # Base JavaScript for layer change detection and fullscreen handling
+        # Base JavaScript for layer change detection
         return """
         <script>
         // Set up Qt WebChannel bridge
@@ -225,18 +370,9 @@ class BaseMapDialog(QDialog):
                 }
             });
 
-            // Monitor fullscreen changes
-            map.on('enterFullscreen', function() {
-                if (window.mapBridge) {
-                    window.mapBridge.toggleFullscreen(true);
-                }
-            });
-
-            map.on('exitFullscreen', function() {
-                if (window.mapBridge) {
-                    window.mapBridge.toggleFullscreen(false);
-                }
-            });
+            // Custom fullscreen handling is now done through Qt's fullscreen request
+            // The folium fullscreen button will trigger the browser's fullscreen API
+            // which Qt will intercept and handle with our custom implementation
 
             // Allow subclasses to add custom initialization
             if (typeof initializeCustomFeatures === 'function') {
@@ -373,8 +509,24 @@ class BaseMapDialog(QDialog):
         if self.map_view:
             self.run_javascript("setTimeout(function() { if (map) map.invalidateSize(); }, 100);")
 
+    def hideEvent(self, event):
+        """Exit fullscreen when dialog is hidden"""
+        if self._is_fullscreen:
+            self._exit_fullscreen()
+        super().hideEvent(event)
+
     def closeEvent(self, event):
-        """Clean up temporary files when closing"""
+        """Clean up when closing"""
+        # Exit fullscreen if active
+        if self._is_fullscreen:
+            self._exit_fullscreen()
+
+        # Force close any remaining fullscreen window
+        if self._fullscreen_window and self._fullscreen_window.isVisible():
+            self._fullscreen_window.close()
+            self._fullscreen_window = None
+
+        # Clean up temporary files
         if self.temp_file_path and os.path.exists(self.temp_file_path):
             try:
                 os.unlink(self.temp_file_path)
