@@ -176,53 +176,125 @@ class MapDialog(BaseMapDialog):
             border: none !important;
         }
 
+        /* Container for spotlight effect */
+        .leaflet-marker-pane {
+        }
+        /* Apply spotlight effect only to direct children */
+        .leaflet-marker-pane:hover > .leaflet-marker-icon > .photo-marker-container > .photo-marker:
+
+        /* Spotlight effect - dim non-hovered markers */
+        .leaflet-marker-pane:hover .photo-marker:not(:hover) {
+            opacity: 0.6;
+            filter: brightness(0.85) saturate(0.8);
+        }
+
         .photo-marker {
-            width: 56px !important;
-            height: 56px !important;
+            width: 64px !important;
+            height: 64px !important;
             position: relative;
             cursor: pointer;
             transform: translateZ(0);
-            will-change: transform;
-            transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            will-change: transform, opacity, filter;
+            transition: all 0.3s cubic-bezier(0.785, 0.135, 0.15, 0.86);
+
+            /* CSS variables for tier colors */
+            --glow-color: #7f8c8d; /* default gray */
         }
 
+        /* Tier-specific glow colors */
+        .tier-wild { --glow-color: #27ae60; }
+        .tier-heard { --glow-color: #3498db; }
+        .tier-captive { --glow-color: #e67e22; }
+        .tier-visual { --glow-color: #27ae60; }
+        .tier-imaged { --glow-color: #9b59b6; }
+        .tier-sketched { --glow-color: #3498db; }
+        .tier-read { --glow-color: #27ae60; }
+        .tier-currently-reading { --glow-color: #e67e22; }
+        .tier-want-to-read { --glow-color: #e74c3c; }
+        .tier-visited { --glow-color: #27ae60; }
+        .tier-stayed-overnight { --glow-color: #3498db; }
+        .tier-want-to-visit { --glow-color: #e74c3c; }
+        .tier-tried { --glow-color: #27ae60; }
+        .tier-cooked { --glow-color: #3498db; }
+        .tier-want-to-try { --glow-color: #e74c3c; }
+        .tier-default { --glow-color: #7f8c8d; }
+
+        /* Glow effect container */
+        .photo-marker::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 72px;
+            height: 72px;
+            border-radius: 50%;
+            background: radial-gradient(
+                circle at center,
+                transparent 40%,
+                var(--glow-color) 65%,
+                transparent 100%
+            );
+            transform: translate(-50%, -50%);
+            opacity: 0;
+            filter: blur(12px);
+            transition: opacity 0.3s ease;
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        /* Activate glow on hover */
+        .photo-marker:hover::before {
+            opacity: 0.8;
+        }
+
+        /* Ensure hovered marker stays fully visible */
         .photo-marker:hover {
-            transform: translateZ(0) scale(1.1);
+            opacity: 1 !important;
+            filter: brightness(1) saturate(1) !important;
             z-index: 1000 !important;
+            transform: translateY(-2px);
         }
 
         .photo-marker-inner {
-            width: 50px;
-            height: 50px;
+            width: 58px;
+            height: 58px;
             border-radius: 50%;
             border: 3px solid;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
             overflow: hidden;
             position: absolute;
             top: 0;
             left: 0;
             background-color: white;
-            transition: box-shadow 0.2s;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
+        /* Enhanced shadow on hover */
         .photo-marker:hover .photo-marker-inner {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+            border-color: var(--glow-color);
         }
 
         .photo-marker img {
-            width: 75px !important;
-            height: 75px !important;
+            width: 128px !important;
+            height: 128px !important;
             object-fit: cover;
             display: block;
             position: absolute;
-            top: -12.5px;
-            left: -12.5px;
-            transform: scale(0.667);
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0.453125); /* 58/128 = 0.453125 */
             transform-origin: center;
             image-rendering: -webkit-optimize-contrast;
             image-rendering: crisp-edges;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
+            transition: filter 0.3s;
+        }
+
+        /* Subtle enhancement on hover */
+        .photo-marker:hover img {
+            filter: brightness(1.05) contrast(1.02);
         }
 
         /* Tier-specific border colors */
@@ -247,6 +319,12 @@ class MapDialog(BaseMapDialog):
         .marker-cluster {
             z-index: 500 !important;
         }
+
+        /* Prevent spotlight effect on clusters */
+        .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large {
+            opacity: 1 !important;
+            filter: none !important;
+        }
         </style>
         """
         m.get_root().html.add_child(folium.Element(css))
@@ -258,7 +336,31 @@ class MapDialog(BaseMapDialog):
                 overlay=True,
                 control=True,
                 show=True,
-                disableClusteringAtZoom=15  # Ensure photos show at reasonable zoom
+                disableClusteringAtZoom=16,  # Show individual markers at high zoom
+                maxClusterRadius=80,  # Adjusted for larger markers
+                spiderfyOnMaxZoom=True,
+                showCoverageOnHover=False,
+                zoomToBoundsOnClick=True,
+                singleMarkerMode=False,
+                spiderfyDistanceMultiplier=1.5,
+                iconCreateFunction="""
+                    function(cluster) {
+                        var childCount = cluster.getChildCount();
+                        var c = ' marker-cluster-';
+                        if (childCount < 10) {
+                            c += 'small';
+                        } else if (childCount < 100) {
+                            c += 'medium';
+                        } else {
+                            c += 'large';
+                        }
+                        return new L.DivIcon({
+                            html: '<div><span>' + childCount + '</span></div>',
+                            className: 'marker-cluster' + c,
+                            iconSize: new L.Point(40, 40)
+                        });
+                    }
+                """
             )
             self.marker_cluster.add_to(m)
         else:
@@ -322,8 +424,9 @@ class MapDialog(BaseMapDialog):
                         tooltip=f"{obs['entry_name']} ({obs['tier'] or 'Unknown'})",
                         icon=folium.DivIcon(
                             html=icon_html,
-                            icon_size=(56, 56),  # Account for border
-                            icon_anchor=(28, 28),  # Center the circular marker
+                            icon_size=(64, 64),  # Updated size
+                            icon_anchor=(32, 32),  # Center the circular marker
+                            class_name='photo-marker-container'  # Add container class
                         )
                     )
                 else:
@@ -572,9 +675,8 @@ class MapDialog(BaseMapDialog):
 
             # Open and process the original image
             with Image.open(photo_path) as img:
-                # Convert to RGB if necessary (removes alpha channel issues)
+                # Convert to RGB if necessary
                 if img.mode in ('RGBA', 'LA', 'P'):
-                    # Create RGB image with white background
                     rgb_img = Image.new('RGB', img.size, (255, 255, 255))
                     if img.mode == 'RGBA' or img.mode == 'LA':
                         rgb_img.paste(img, mask=img.split()[-1])
@@ -595,13 +697,12 @@ class MapDialog(BaseMapDialog):
                 # Crop to square
                 square_img = img.crop((left, top, right, bottom))
 
-                # Resize to a reasonable size for web display (200x200)
-                # This gives us good quality even when scaled
-                square_img = square_img.resize((200, 200), Image.Resampling.NEAREST)
+                # Resize to 128x128 for 2x resolution on 64px display
+                square_img = square_img.resize((128, 128), Image.Resampling.LANCZOS)
 
-                # Convert to base64 PNG for smaller file size
+                # Convert to base64 with high quality
                 buffer = io.BytesIO()
-                square_img.save(buffer, format='PNG', quality=100, optimize=True)
+                square_img.save(buffer, format='JPEG', quality=95, optimize=True)
                 base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
 
                 return f"data:image/jpeg;base64,{base64_image}"
