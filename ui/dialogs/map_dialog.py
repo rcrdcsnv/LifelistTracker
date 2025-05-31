@@ -330,37 +330,18 @@ class MapDialog(BaseMapDialog):
         m.get_root().html.add_child(folium.Element(css))
 
         # Create marker cluster for better performance with many markers
-        if len(self.observations) > 5:
+        if len(self.observations) > 5:  # Keep original threshold for performance
             self.marker_cluster = plugins.MarkerCluster(
                 name="Observations",
                 overlay=True,
-                control=True,
+                control=False,
                 show=True,
-                disableClusteringAtZoom=16,  # Show individual markers at high zoom
-                maxClusterRadius=80,  # Adjusted for larger markers
-                spiderfyOnMaxZoom=True,
-                showCoverageOnHover=False,
-                zoomToBoundsOnClick=True,
-                singleMarkerMode=False,
-                spiderfyDistanceMultiplier=1.5,
-                iconCreateFunction="""
-                    function(cluster) {
-                        var childCount = cluster.getChildCount();
-                        var c = ' marker-cluster-';
-                        if (childCount < 10) {
-                            c += 'small';
-                        } else if (childCount < 100) {
-                            c += 'medium';
-                        } else {
-                            c += 'large';
-                        }
-                        return new L.DivIcon({
-                            html: '<div><span>' + childCount + '</span></div>',
-                            className: 'marker-cluster' + c,
-                            iconSize: new L.Point(40, 40)
-                        });
-                    }
-                """
+                options={
+                    'maxClusterRadius': 80,
+                    'zoomToBoundsOnClick': True,
+                    'singleMarkerMode': False,
+                    'spiderfyDistanceMultiplier': 2,
+                }
             )
             self.marker_cluster.add_to(m)
         else:
