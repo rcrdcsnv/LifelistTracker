@@ -276,18 +276,23 @@ class BaseMapDialog(QDialog):
         # Add base layers to map
         layer_added = False
         for layer_name, layer_config in base_layers.items():
+            # Determine if this layer should be shown initially
+            is_default = (layer_name == preferred_layer) or (not layer_added and layer_name == 'OpenStreetMap')
+
             tile_layer = folium.TileLayer(
                 tiles=layer_config['url'],
                 attr=layer_config['attribution'],
                 name=layer_name,
                 overlay=False,
                 control=True,
-                max_zoom=layer_config.get('max_zoom', 19)
+                max_zoom=layer_config.get('max_zoom', 19),
+                show=is_default  # Only show the default layer initially
             )
 
-            # Add the preferred layer as default, or first one if preferred not found
-            if layer_name == preferred_layer or (not layer_added and layer_name == 'OpenStreetMap'):
+            # Track that we've added a default layer
+            if is_default:
                 layer_added = True
+
             tile_layer.add_to(m)
 
         # Add plugins
@@ -356,23 +361,74 @@ class BaseMapDialog(QDialog):
 
     def _add_custom_javascript(self, m: folium.Map) -> str:
         """Add custom JavaScript for Qt integration"""
-        # Base JavaScript for layer change detection
+        # Base JavaScript for layer change detection and flicker prevention
         return """
         <script>
         // Set up Qt WebChannel bridge
         new QWebChannel(qt.webChannelTransport, function(channel) {
             window.mapBridge = channel.objects.mapBridge;
 
-            // Monitor layer changes
-            map.on('baselayerchange', function(e) {
-                if (window.mapBridge) {
-                    window.mapBridge.onBaseLayerChanged(e.name);
+            // Fix for tile flickering - ensure only one base layer is visible at a time
+            var currentBaseLayer = null;
+
+            // Find and store the initially visible base layer
+            map.eachLayer(function(layer) {
+                if (layer.options && !layer.options.overlay && layer._url && map.hasLayer(layer)) {
+                    currentBaseLayer = layer;
                 }
             });
 
-            // Custom fullscreen handling is now done through Qt's fullscreen request
-            // The folium fullscreen button will trigger the browser's fullscreen API
-            // which Qt will intercept and handle with our custom implementation
+            // Monitor layer changes
+            map.on('baselayerchange', function(e) {
+                // Notify Qt about the change
+                if (window.mapBridge) {
+                    window.mapBridge.onBaseLayerChanged(e.name);
+                }
+
+                // Prevent flickering by ensuring clean layer transition
+                if (currentBaseLayer && currentBaseLayer !== e.layer) {
+                    // Remove the old layer immediately
+                    map.removeLayer(currentBaseLayer);
+                }
+                currentBaseLayer = e.layer;
+
+                // Ensure only the new base layer is visible
+                map.eachLayer(function(layer) {
+                    if (layer.options && !layer.options.overlay && layer._url) {
+                        if (layer !== e.layer && map.hasLayer(layer)) {
+                            map.removeLayer(layer);
+                        }
+                    }
+                });
+            });
+
+            // Override the layer control behavior to prevent multiple base layers
+            if (map.layerControl && map.layerControl._onInputClick) {
+                var originalOnInputClick = map.layerControl._onInputClick;
+                map.layerControl._onInputClick = function() {
+                    // Store current base layer before change
+                    var oldBaseLayer = null;
+                    map.eachLayer(function(layer) {
+                        if (layer.options && !layer.options.overlay && layer._url && map.hasLayer(layer)) {
+                            oldBaseLayer = layer;
+                        }
+                    });
+
+                    // Call original handler
+                    originalOnInputClick.apply(this, arguments);
+
+                    // Clean up to prevent flickering
+                    setTimeout(function() {
+                        map.eachLayer(function(layer) {
+                            if (layer.options && !layer.options.overlay && layer._url) {
+                                if (oldBaseLayer && layer !== currentBaseLayer && map.hasLayer(layer) && layer === oldBaseLayer) {
+                                    map.removeLayer(layer);
+                                }
+                            }
+                        });
+                    }, 0);
+                };
+            }
 
             // Allow subclasses to add custom initialization
             if (typeof initializeCustomFeatures === 'function') {
@@ -460,14 +516,44 @@ class BaseMapDialog(QDialog):
         """Set the active base layer by name"""
         if self.map_view:
             js = f"""
-            // Find and activate the layer
+            // Prevent flickering during layer switch
+            var targetLayer = null;
+            var currentLayer = null;
+
+            // Find target layer and current visible layer
             map.eachLayer(function(layer) {{
-                if (layer.options && layer.options.name === '{layer_name}') {{
-                    map.addLayer(layer);
-                }} else if (layer.options && layer.options.name && !layer.options.overlay) {{
-                    map.removeLayer(layer);
+                if (layer.options && !layer.options.overlay && layer._url) {{
+                    if (layer.options.name === '{layer_name}') {{
+                        targetLayer = layer;
+                    }}
+                    if (map.hasLayer(layer)) {{
+                        currentLayer = layer;
+                    }}
                 }}
             }});
+
+            if (targetLayer && targetLayer !== currentLayer) {{
+                // Add target layer first (if not already added)
+                if (!map.hasLayer(targetLayer)) {{
+                    map.addLayer(targetLayer);
+                }}
+
+                // Remove current layer after target is loaded
+                if (currentLayer) {{
+                    map.removeLayer(currentLayer);
+                }}
+
+                // Update the layer control UI
+                var inputs = document.querySelectorAll('.leaflet-control-layers-base input');
+                inputs.forEach(function(input) {{
+                    if (input.nextSibling && input.nextSibling.textContent.trim() === '{layer_name}') {{
+                        input.checked = true;
+                    }}
+                }});
+
+                // Fire the baselayerchange event
+                map.fire('baselayerchange', {{layer: targetLayer, name: '{layer_name}'}});
+            }}
             """
             self.run_javascript(js)
 
